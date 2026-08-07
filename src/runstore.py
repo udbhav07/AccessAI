@@ -17,7 +17,11 @@ import shutil
 import time
 import uuid
 
-RUNS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
+from . import PROJECT_ROOT
+
+# Beside app.py rather than inside the package, so the source tree stays
+# clean and the .gitignore `runs/` rule keeps matching.
+RUNS_DIR = os.path.join(PROJECT_ROOT, "runs")
 MAX_AGE_SECONDS = 3600
 
 

@@ -4,8 +4,16 @@ Gemini is stubbed out, so the suite is deterministic, free, and needs no API
 key or network. Run with:  python test_colors.py
 """
 
-import sys
 import types
+
+import os
+import sys
+
+# Tests live in tests/ but import the package from the project root, so put the
+# root on sys.path before anything else. Works no matter where you run from.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
 
 # --- stub gemini before webColorss imports it -------------------------------
 _stub = types.ModuleType("gemini")
@@ -19,10 +27,13 @@ def _suggest_text_color(fg, bg):
 
 
 _stub.suggest_text_color = _suggest_text_color
+# webColorss does `from .gemini import ...`, which resolves to the
+# absolute name src.gemini -- so that is the key to stub.
+sys.modules["src.gemini"] = _stub
 sys.modules["gemini"] = _stub
 
 from bs4 import BeautifulSoup                                   # noqa: E402
-import webColorss as wc                                         # noqa: E402
+from src import webColorss as wc                                # noqa: E402
 
 PASSED, FAILED = 0, 0
 

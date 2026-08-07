@@ -8,20 +8,28 @@ verifier.
 """
 
 import subprocess
-import sys
 import time
 import types
+
+import os
+import sys
+
+# Tests live in tests/ but import the package from the project root, so put the
+# root on sys.path before anything else. Works no matter where you run from.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
 
 _stub = types.ModuleType("gemini")
 _stub.suggest_text_color = lambda fg, bg: None      # force the deterministic path
 _stub.getAlt = lambda src: "a stubbed description"
 _stub.getLabel = lambda inp, label="": "Stub Label"
+sys.modules["src.gemini"] = _stub
 sys.modules["gemini"] = _stub
 
 from bs4 import BeautifulSoup                                      # noqa: E402
-import runstore                                                    # noqa: E402
-import verifier                                                    # noqa: E402
-from webScraper import Scraper, stamp_ids, strip_ids               # noqa: E402
+from src import runstore, verifier                                 # noqa: E402
+from src.webScraper import Scraper, stamp_ids, strip_ids           # noqa: E402
 
 PORT = 8791
 # Served from the project root, not templates/: the fixture's images live at
@@ -113,6 +121,7 @@ print("\n[4] live capture on the demo fixture (real browser)")
 
 server = subprocess.Popen(
     [sys.executable, "-m", "http.server", str(PORT)],
+    cwd=ROOT,          # serve the project root: the fixture's images are at ../DemoImages
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 )
 time.sleep(2)

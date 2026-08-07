@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from PIL import Image
 
-from webColorss import check_contrast
+from .webColorss import check_contrast
 
 VIEWPORT = {"width": 1280, "height": 720}
 GEOMETRY_TOLERANCE = 1.0        # px; sub-pixel font rendering is not a layout break

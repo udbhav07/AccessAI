@@ -2,8 +2,8 @@ import requests
 from collections import namedtuple
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from gemini import getAlt, getLabel
-from webColorss import ChangeColor
+from .gemini import getAlt, getLabel
+from .webColorss import ChangeColor
 
 # Stamped on every element before any fixer runs, so the verifier can match
 # old -> new. A selector path like `div:nth-child(3) > input` cannot be used:

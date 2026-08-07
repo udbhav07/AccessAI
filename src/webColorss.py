@@ -20,7 +20,7 @@ import cssutils
 import requests
 from PIL import ImageColor
 
-from gemini import suggest_text_color
+from .gemini import suggest_text_color
 
 cssutils.log.setLevel(logging.CRITICAL)   # cssutils is extremely noisy on real-world CSS
 

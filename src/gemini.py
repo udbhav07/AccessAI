@@ -3,7 +3,11 @@ import PIL.Image
 import requests, io, os
 from dotenv import load_dotenv
 
-load_dotenv("googleapikey.env")
+from . import PROJECT_ROOT
+
+# The key file lives at the project root, beside app.py -- resolve it
+# absolutely so the working directory does not matter.
+load_dotenv(os.path.join(PROJECT_ROOT, "googleapikey.env"))
 genai.configure(api_key=os.getenv("GEMAPI"))
 model = genai.GenerativeModel("gemini-1.5-flash")
 

@@ -1,8 +1,7 @@
 from flask import Flask, render_template, request
 
-import runstore
-import verifier
-from webScraper import Scraper
+from src import runstore, verifier
+from src.webScraper import Scraper
 
 app = Flask(__name__, template_folder="templates")
 
