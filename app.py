@@ -1,68 +1,65 @@
 from flask import Flask, render_template, request
+
+import runstore
+import verifier
 from webScraper import Scraper
-from urllib.parse import urljoin
-from bs4 import BeautifulSoup
-from picturesapp import take_screenshot, save_screenshot
 
 app = Flask(__name__, template_folder="templates")
+
 
 @app.route("/", methods=["POST", "GET"])
 def index():
     if request.method == "POST":
         url = request.form.get("website_link")
-        analyzer = Scraper()
-        base, soup, issues = analyzer.scrape_url(url)
+        result = Scraper().scrape_url(url)
 
-        # print(issues)
+        # Asset URLs were absolutised and identity stamps applied inside the
+        # scraper, before the before-snapshot was taken -- so the two versions
+        # differ only by the fixes themselves.
+        html = str(result.soup)
 
-        # for issue in issues:
-        #     if issue['type'] == 'altMissing':
-        #         html.replace(issue['element'], issue['fix'])
-        #         print(issue['fix'], issue['element'])
-            
-        #     if issue['type'] == 'labelMissing':
-        #         if issue['element']:
-        #             html.replace(issue['element'], issue['fix'])
-        #         else:
-        #             html.replace(issue['input'], f"{issue['input']} {issue['fix']}")
-        
+        run_id = runstore.new_run_id()
+        runstore.save_run(
+            run_id,
+            result.html_before,
+            html,
+            {"url": result.url, "modified_ids": sorted(result.modified_ids)},
+        )
 
-        # soup = BeautifulSoup(html, 'html.parser')
-        
-        for atag in soup.find_all('a'):
-            if 'href' in atag.attrs:
-                atag['href'] = urljoin(base, atag['href'])
-        
-        for img in soup.find_all('img'):
-            if 'src' in img.attrs:
-                img['src'] = urljoin(base, img['src'])
-        
-        for link in soup.find_all('link'):
-            if 'href' in link.attrs:
-                link['href'] = urljoin(base, link['href'])
-        
-        for script in soup.find_all('script'):
-            if 'src' in script.attrs:
-                script['src'] = urljoin(base, script['src'])
-        
-        html = str(soup)
-
-        return render_template("index.html", output=html)
+        return render_template(
+            "index.html", output=html, run_id=run_id, issues=result.issues
+        )
 
     return render_template("index.html")
 
-@app.route("/compare", methods=["POST"])
-def cmp():
-    if request.method == "POST":
-        with concurrent.futures.ThreadPoolExecutor() as executor:  
-            original_screenshot = executor.submit(take_screenshot, "/")  
-            
-            original_screenshot = original_screenshot.result() 
 
-        # Save screenshots  
-        save_screenshot(original_screenshot, 'original_screenshot.png')
-        # take_screenshot("/")
-    return render_template("index.html")
+@app.route("/verify", methods=["POST"])
+def verify():
+    """Compare the remediated HTML against the original page.
+
+    The real operation is *this generated HTML vs. that original URL* -- one
+    side is not a URL at all, which is why the old two-URL screenshot tool
+    could never be the right thing to point at.
+    """
+    run = runstore.load_run(request.form.get("run_id", ""))
+    if run is None:
+        return render_template(
+            "index.html",
+            error="That result has expired. Please run the scan again.",
+        )
+
+    before_html, after_html, meta = run
+    report = verifier.run_checks(
+        meta.get("url", ""), before_html, after_html, meta.get("modified_ids", [])
+    )
+
+    return render_template(
+        "index.html",
+        output=after_html,
+        run_id=request.form.get("run_id", ""),
+        report=report.as_dict(),
+    )
+
 
 if __name__ == "__main__":
-	app.run(debug=True)
+    app.run(debug=True)

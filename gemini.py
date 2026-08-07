@@ -1,7 +1,9 @@
 import google.generativeai as genai
 import PIL.Image
 import requests, io, os
+from dotenv import load_dotenv
 
+load_dotenv("googleapikey.env")
 genai.configure(api_key=os.getenv("GEMAPI"))
 model = genai.GenerativeModel("gemini-1.5-flash")
 
@@ -42,13 +44,30 @@ def getColors(style):
 
     except Exception as e:
         print(e)
+        return style        # never wipe the element's styling on failure
 
-# html_input = {
-#     'type': 'text',
-#     'placeholder': 'Enter your name'
-# }
-# existing_label = "UserName"
 
-# suggested_label = getLabel(html_input, existing_label)
-# print(suggested_label)
+def suggest_text_color(fg, bg):
+    """Suggest an accessible text colour for `fg` sitting on `bg`.
+
+    Returns a single hex colour so only the `color` property has to be
+    touched -- asking for a whole style string back risks the model quietly
+    dropping padding, font-size and everything else. Returns None on any
+    failure so the caller can fall back to a deterministic pick; the answer
+    is verified against the WCAG threshold by the caller either way.
+    """
+    try:
+        prompt = (
+            "Pick an accessible text colour for a web page. "
+            f"The background colour is {bg} and the current text colour is {fg}. "
+            "The replacement must keep the original hue as far as possible and must "
+            "reach a WCAG contrast ratio of at least 4.5:1 against that background. "
+            "Answer with only a hex colour inside square brackets, like [#1a1a1a]."
+        )
+        response = model.generate_content(prompt)
+        return response.text.split("[")[1].split("]")[0].strip()
+
+    except Exception as e:
+        print(f"suggest_text_color failed: {e}")
+        return None
 
