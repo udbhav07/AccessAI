@@ -1,14 +1,14 @@
 # pip install -r requirements.txt
-opencv-python
-selenium
+# then: python -m playwright install chromium
+
 flask
-selenium
-numpy
-bs4
 requests
+bs4
 Pillow
-google-generativeai
 cssutils
+google-generativeai
+python-dotenv
+
+# verification (verifier.py)
 playwright
 numpy
-python-dotenv

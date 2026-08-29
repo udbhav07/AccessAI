@@ -304,6 +304,52 @@ check("every fix was a genuine improvement",
 check("#ab (2.4:1, stylesheet-only) is now fixed — the case the old code could never see",
       any(e["target"] == "#ab" for e in issues), [e["target"] for e in issues])
 
+
+print("")
+print("[10] the four-source fixture (templates/demo_all_sources.html)")
+
+FIXTURE_URL = "http://example.com/templates/demo_all_sources.html"
+_fixture_css = open(os.path.join(ROOT, "templates", "demo_theme.css"), encoding="utf-8").read()
+
+
+def fixture_fetch(url, timeout=None):
+    if url.endswith("demo_theme.css"):
+        return FakeResponse(_fixture_css)
+    raise wc.requests.RequestException("404")
+
+
+wc.requests.get = fixture_fetch
+wc.reset_budget()
+_stub.suggest_reply = None                      # deterministic path only
+
+with open(os.path.join(ROOT, "templates", "demo_all_sources.html"), encoding="utf-8") as fh:
+    fixture = soup_of(fh.read())
+fixture_issues = wc.ChangeColor(FIXTURE_URL, fixture)
+by_source = {}
+for e in fixture_issues:
+    by_source.setdefault(e["source"], []).append(e)
+
+for src, human in (("inline", "1. inline style"), ("attribute", "2. legacy attribute"),
+                   ("style-block", "3. <style> block"), ("stylesheet", "4. external sheet")):
+    check("fixture exercises " + human, src in by_source, sorted(by_source))
+
+check("fixture: every emitted colour passes 4.5:1",
+      all(e["ratio_after"] >= 4.5 for e in fixture_issues),
+      [(e["target"], e["ratio_after"]) for e in fixture_issues])
+check("fixture: every fix is a genuine improvement",
+      all(e["ratio_after"] > e["ratio_before"] for e in fixture_issues))
+check("fixture: inline padding survived",
+      "padding" in fixture.find("h2")["style"], fixture.find("h2")["style"])
+check("fixture: bgcolor left untouched",
+      fixture.find("body")["bgcolor"] == "#000000")
+check("fixture: no inline style added to <body> (cascade preserved)",
+      fixture.find("body").get("style") is None)
+check("fixture: external sheet inlined",
+      fixture.find("link", rel="stylesheet") is None)
+check("fixture: url() absolutised against the SHEET",
+      "http://example.com/templates/img/hero.png" in str(fixture),
+      "url() not rewritten")
+
 print("\n" + "=" * 62)
 print(f"  {PASSED} passed, {FAILED} failed")
 print("=" * 62)

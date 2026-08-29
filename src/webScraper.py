@@ -1,5 +1,6 @@
 import requests
 from collections import namedtuple
+from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from .gemini import getAlt, getLabel
@@ -9,6 +10,11 @@ from .webColorss import ChangeColor
 # old -> new. A selector path like `div:nth-child(3) > input` cannot be used:
 # inserting a <label> shifts the nth-child index of every following sibling,
 # so the fix would invalidate its own identity scheme.
+# Each image and each input needs its own Gemini round-trip (~1-3s). They are
+# independent, so they overlap; the cap keeps a large page from opening
+# hundreds of concurrent connections.
+MAX_WORKERS = 8
+
 ID_ATTR = "data-aai-id"
 NEW_ATTR = "data-aai-new"
 
@@ -87,41 +93,60 @@ class Scraper:
     def get_imgs(self):
         """Generate alt text for images that have none.
 
-        Every change is recorded so the verifier knows this element was
-        modified on purpose -- an alt attribute is invisible on a loading
-        image, but a *broken* image renders its alt text and therefore
-        changes size.
+        The API calls fan out; the soup is only ever mutated from this thread.
+        BeautifulSoup is not thread-safe, so the shape is always: collect
+        targets, run the network calls in parallel, then apply results in order.
         """
-        issues = []
+        targets = []
         for img in self.soup.find_all('img'):
-            if not img.get('alt') or img.get('alt') == '':
-                img_src = img.get('src')
-                if img_src:
-                    #if src is relative make it absolute
-                    if img_src[0:7] != "http://" and img_src[0:8] != "https://":
-                        img_src = urljoin(self.url, img_src)
+            if img.get('alt'):          # covers both missing and empty alt
+                continue
+            src = img.get('src')
+            if not src:
+                continue
+            if not src.startswith(("http://", "https://")):
+                src = urljoin(self.url, src)     # relative -> absolute
+            targets.append((img, src))
 
-                    #get alt text here
-                    imgAlt = getAlt(img_src)
-                    img['alt'] = imgAlt
-                    issues.append({
-                        "type": "alt", "source": "image", "target": img.get('src'),
-                        "old": "", "new": imgAlt, "ids": [img.get(ID_ATTR)],
-                    })
+        if not targets:
+            return []
+
+        with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(targets))) as pool:
+            alts = list(pool.map(lambda t: getAlt(t[1]), targets))
+
+        issues = []
+        for (img, _), alt in zip(targets, alts):
+            img['alt'] = alt
+            issues.append({
+                "type": "alt", "source": "image", "target": img.get('src'),
+                "old": "", "new": alt, "ids": [img.get(ID_ATTR)],
+            })
         return issues
 
     def get_label(self):
-        """Add missing labels and replace ones that don't describe their input."""
-        issues = []
+        """Add missing labels and replace ones that don't describe their input.
+
+        An input that already has a label costs two calls (suitability check,
+        then generation), so parallelising matters more here than for images.
+        """
+        targets = []
         for inp in self.soup.find_all('input'):
-            if not inp.get('id'): #labeling happens for imputs which have ids , so if id is not there ,labeling not possible
+            if not inp.get('id'):   # <label for> needs an id to point at
                 continue
-            label = self.soup.find('label', attrs={'for': inp['id']})
-            gemLabel = getLabel(inp, label)
-            if gemLabel == 'y':
+            targets.append((inp, self.soup.find('label', attrs={'for': inp['id']})))
+
+        if not targets:
+            return []
+
+        with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(targets))) as pool:
+            suggestions = list(pool.map(lambda t: getLabel(t[0], t[1]), targets))
+
+        issues = []
+        for (inp, label), gemLabel in zip(targets, suggestions):
+            if gemLabel == 'y':     # existing label already fits, or the call failed
                 continue
 
-            if label is None:          # `not label` is falsy for an EMPTY <label></label>
+            if label is None:       # `not label` is falsy for an EMPTY <label></label>
                 label = self.soup.new_tag('label')
                 label['for'] = inp['id']
                 label.string = gemLabel
@@ -147,6 +172,8 @@ class Scraper:
         return ChangeColor(self.url, self.soup)
 
 
+# Run as a module so the relative imports resolve:
+#     python -m src.webScraper http://localhost:8000/templates/experiment.html
 if __name__ == "__main__":
     import sys
     target = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000/experiment.html"

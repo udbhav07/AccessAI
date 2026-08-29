@@ -1,0 +1,6 @@
+/* SOURCE 4: external stylesheet — the one the tool could never see before. */
+.card { background-color: aqua; color: cadetblue; }        /* 2.4:1 */
+
+/* A relative url() to prove it is absolutised against THIS file's address
+   when the sheet gets inlined, not against the page's. */
+.hero { background: url('img/hero.png') no-repeat; }

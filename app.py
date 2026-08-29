@@ -1,3 +1,5 @@
+import os
+
 from flask import Flask, render_template, request
 
 from src import runstore, verifier
@@ -61,4 +63,7 @@ def verify():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Werkzeug's debugger is an interactive console -- shipping it enabled
+    # is remote code execution. Opt in locally with FLASK_DEBUG=1.
+    debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+    app.run(debug=debug)

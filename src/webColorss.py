@@ -488,6 +488,8 @@ def ChangeColor(url, soup):
     return report
 
 
+# Run as a module so the relative import of gemini resolves:
+#     python -m src.webColorss
 if __name__ == "__main__":
     # Offline smoke test of the maths -- no network, no API calls.
     for fg, bg in [("cadetblue", "aqua"), ("#00f", "#000"),

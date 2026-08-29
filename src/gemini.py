@@ -36,8 +36,12 @@ def getLabel(inp, label=""):
         response = model.generate_content(prompt)
         return response.text.split("[")[1].split("]")[0]
 
-    except Exception:
-        return ""
+    except Exception as e:
+        print(f"getLabel failed: {e}")
+        # 'y' means "leave this input alone". Returning "" would blank an
+        # existing good label -- an API hiccup would actively make the page
+        # worse. Same class of bug as getColors returning None.
+        return 'y'
 
 def getColors(style):
     try:
