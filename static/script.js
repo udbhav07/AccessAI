@@ -12,10 +12,15 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    // Both say roughly how long: a scan is one Gemini round-trip per image
+    // and per input, and verifying launches a browser. A bare spinner on a
+    // request that takes minutes reads as a hang, and the user reloads --
+    // which doubles the work rather than cancelling it.
     busy(document.getElementById('verify-form'),
-         document.getElementById('verify-btn'), 'Verifying...');
+         document.getElementById('verify-btn'),
+         'Verifying — this takes a moment...');
 
     var scanForm = document.querySelector('form[action="/"]');
     busy(scanForm, scanForm && scanForm.querySelector('button[type="submit"]'),
-         'Scanning...');
+         'Scanning — this can take a minute...');
 });

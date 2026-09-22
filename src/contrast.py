@@ -73,7 +73,15 @@ def resolve_color(value):
         return None
     if len(parsed) == 4:
         r, g, b, alpha = parsed
-        if alpha < 128:               # mostly see-through: the real backdrop is behind it
+        # A deliberate approximation, not a measurement. Properly, a
+        # translucent colour should be composited over whatever is behind it
+        # -- rgba(0,0,0,0.6) on white renders as about #666 (5.7:1), not as
+        # black (21:1), so this reads such pairs as better than they are. Real
+        # compositing needs a known backdrop, which is the same thing
+        # _effective_background cannot supply until detection moves into the
+        # browser. Until then: mostly see-through means skip it, and anything
+        # more opaque is treated as its own colour.
+        if alpha < 128:
             return None
         return (r, g, b)
     return parsed[:3]

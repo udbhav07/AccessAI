@@ -27,6 +27,14 @@ SCANS_PER_HOUR = 20
 _scan_log = collections.defaultdict(collections.deque)
 _scan_lock = threading.Lock()
 
+# No CSRF tokens on the two POST forms, on purpose: there are no sessions, no
+# accounts and no stored user state, so there is nothing an attacker could
+# make a visitor's browser do that they could not do themselves. What a forged
+# post *can* do is spend our budget, and that is what the rate limit above and
+# the SSRF guard in nethttp are for. The moment anything here is tied to a
+# user -- saved scans, an account, an API key per person -- this needs
+# Flask-WTF's CSRFProtect before that lands, not after.
+
 
 def _over_rate_limit(client_ip):
     cutoff = time.time() - 3600
@@ -153,9 +161,15 @@ def verify():
     run_id = request.form.get("run_id", "")
     run = runstore.load_run(run_id)
     if run is None:
+        # Runs are swept after an hour, so a user who leaves the tab open and
+        # comes back lands here. Nothing is left to show -- the HTML lived in
+        # the run -- so at least say why, rather than resetting to a blank page
+        # with no explanation.
         return render_template(
             "index.html",
-            error="That result has expired. Please run the scan again.",
+            error=(f"That result is no longer available -- results are kept for "
+                   f"{runstore.MAX_AGE_SECONDS // 60} minutes. "
+                   "Please run the scan again."),
         )
 
     before_html, after_html, meta = run

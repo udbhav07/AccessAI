@@ -246,8 +246,10 @@ def test_one_caller_does_not_spend_another_callers_allowance(client, scraper):
     {"run_id": "../../etc"},
     {},
 ])
-def test_verify_on_a_bogus_run_says_it_expired(client, data):
-    assert b"expired" in client.post("/verify", data=data).data
+def test_verify_on_a_bogus_run_explains_itself(client, data):
+    body = client.post("/verify", data=data).data
+    assert b"no longer available" in body
+    assert b"minutes" in body, "say how long results are kept, not just that it is gone"
 
 
 def test_verify_surfaces_a_crash_without_losing_the_result(client, monkeypatch):
