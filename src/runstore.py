@@ -23,6 +23,11 @@ from . import PROJECT_ROOT
 # clean and the .gitignore `runs/` rule keeps matching.
 RUNS_DIR = os.path.join(PROJECT_ROOT, "runs")
 MAX_AGE_SECONDS = 3600
+# Each run holds two full copies of a third-party page, so a burst of large
+# pages can fill a disk well inside the hour the age limit allows. The age
+# rule alone also collects nothing while the app sits idle, so whatever the
+# last burst left behind stays until someone scans again.
+MAX_TOTAL_BYTES = 500_000_000
 
 
 def new_run_id():
@@ -81,17 +86,42 @@ def load_run(run_id):
     return before, after, meta
 
 
-def sweep(max_age=MAX_AGE_SECONDS):
-    """Delete runs older than `max_age` seconds so `runs/` stays bounded."""
-    if not os.path.isdir(RUNS_DIR):
-        return
-    cutoff = time.time() - max_age
+def _run_dirs():
+    """Every run on disk as (path, mtime, bytes), newest last."""
+    found = []
     for name in os.listdir(RUNS_DIR):
         path = os.path.join(RUNS_DIR, name)
         if not os.path.isdir(path):
             continue
         try:
-            if os.path.getmtime(path) < cutoff:
-                shutil.rmtree(path, ignore_errors=True)
+            size = sum(
+                os.path.getsize(os.path.join(path, f))
+                for f in os.listdir(path)
+                if os.path.isfile(os.path.join(path, f))
+            )
+            found.append((path, os.path.getmtime(path), size))
         except OSError:
-            pass
+            continue
+    found.sort(key=lambda entry: entry[1])
+    return found
+
+
+def sweep(max_age=MAX_AGE_SECONDS, max_total=MAX_TOTAL_BYTES):
+    """Keep `runs/` bounded by age and by total size, oldest evicted first."""
+    if not os.path.isdir(RUNS_DIR):
+        return
+
+    cutoff = time.time() - max_age
+    surviving = []
+    for path, mtime, size in _run_dirs():
+        if mtime < cutoff:
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            surviving.append((path, mtime, size))
+
+    total = sum(size for _, _, size in surviving)
+    for path, _, size in surviving:          # already oldest-first
+        if total <= max_total:
+            break
+        shutil.rmtree(path, ignore_errors=True)
+        total -= size

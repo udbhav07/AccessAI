@@ -89,6 +89,39 @@ except ValueError:
     _refused = True
 check("path traversal refused on save", _refused)
 
+print("\n[1b] the run store stays bounded")
+
+import shutil as _shutil                                          # noqa: E402
+
+_tmp_runs = os.path.join(ROOT, "runs", "_sweep_test")
+_real_runs_dir = runstore.RUNS_DIR
+_shutil.rmtree(_tmp_runs, ignore_errors=True)
+os.makedirs(_tmp_runs, exist_ok=True)
+runstore.RUNS_DIR = _tmp_runs
+try:
+    ids = []
+    for n in range(4):
+        r = runstore.new_run_id()
+        runstore.save_run(r, "x" * 40_000, "y" * 40_000, {"url": f"http://x/{n}"})
+        os.utime(os.path.join(_tmp_runs, r), (time.time() - n, time.time() - n))
+        ids.append(r)
+
+    check("all four survive under a generous cap",
+          sum(1 for r in ids if runstore.load_run(r)) == 4)
+
+    runstore.sweep(max_total=200_000)       # room for about two runs
+    kept = [r for r in ids if runstore.load_run(r)]
+    check("a size cap evicts down to the limit", len(kept) < 4, len(kept))
+    check("...and it is the newest that survive",
+          set(kept) <= {ids[0], ids[1]}, kept)
+
+    runstore.sweep(max_age=0)
+    check("the age rule still clears everything",
+          not any(runstore.load_run(r) for r in ids))
+finally:
+    runstore.RUNS_DIR = _real_runs_dir
+    _shutil.rmtree(_tmp_runs, ignore_errors=True)
+
 print("\n[2] identity stamping")
 
 soup = stamped("<html><body><div><p>hi</p></div></body></html>")

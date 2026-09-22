@@ -1,4 +1,7 @@
+import collections
 import os
+import threading
+import time
 from urllib.parse import urlparse
 
 import requests
@@ -10,6 +13,31 @@ from src.nethttp import BlockedURL
 from src.webScraper import Scraper, UnsupportedContent, strip_ids
 
 app = Flask(__name__, template_folder="templates")
+
+# Whatever the last burst left behind sits there until someone scans again,
+# because the sweep only used to run on write. Clear it once on the way up.
+runstore.sweep()
+
+# A scan is expensive in a way a visitor cannot see: dozens of Gemini calls,
+# two full page copies on disk, and a browser launch if they verify. Without a
+# ceiling, one person with a loop empties the API budget and fills the disk.
+# Deliberately in-process and per-worker -- a shared store would be the right
+# answer, and is not worth a Redis dependency at this size.
+SCANS_PER_HOUR = 20
+_scan_log = collections.defaultdict(collections.deque)
+_scan_lock = threading.Lock()
+
+
+def _over_rate_limit(client_ip):
+    cutoff = time.time() - 3600
+    with _scan_lock:
+        seen = _scan_log[client_ip]
+        while seen and seen[0] < cutoff:
+            seen.popleft()
+        if len(seen) >= SCANS_PER_HOUR:
+            return True
+        seen.append(time.time())
+        return False
 
 
 @app.after_request
@@ -65,6 +93,13 @@ def index():
     url = (request.form.get("website_link") or "").strip()
     if not url:
         return render_template("index.html", error="Please enter a URL.")
+
+    if _over_rate_limit(request.remote_addr or "unknown"):
+        return render_template(
+            "index.html",
+            error=f"That is more than {SCANS_PER_HOUR} scans in an hour. "
+                  "Please try again later.",
+        )
 
     try:
         result = Scraper().scrape_url(url)

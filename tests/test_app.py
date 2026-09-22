@@ -243,6 +243,28 @@ check("an unknown run is a 404",
 check("a traversal attempt is a 404",
       client.get("/download/..%2f..%2fetc").status_code == 404)
 
+print("\n[4e] scans are rate limited")
+
+webapp._scan_log.clear()
+FakeScraper.raises = None
+responses = [client.post("/", data={"website_link": "http://example.com/"})
+             for _ in range(webapp.SCANS_PER_HOUR + 3)]
+limited = [r for r in responses if b"more than" in r.data]
+check(f"the first {webapp.SCANS_PER_HOUR} scans go through",
+      len(responses) - len(limited) == webapp.SCANS_PER_HOUR,
+      f"{len(responses) - len(limited)} allowed")
+check("...and the rest are turned away", len(limited) == 3, len(limited))
+check("...with a message, not an error page",
+      all(r.status_code == 200 for r in responses),
+      sorted({r.status_code for r in responses}))
+
+webapp._scan_log.clear()
+check("a different caller is not affected by someone else's limit",
+      b"more than" not in client.post(
+          "/", data={"website_link": "http://example.com/"},
+          environ_base={"REMOTE_ADDR": "203.0.113.9"}).data)
+webapp._scan_log.clear()
+
 print("\n[5] /verify on an expired or bogus run")
 
 response = client.post("/verify", data={"run_id": "deadbeef"})
