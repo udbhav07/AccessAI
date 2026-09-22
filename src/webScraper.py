@@ -22,6 +22,16 @@ ScrapeResult = namedtuple(
     "ScrapeResult", "url soup issues html_before modified_ids"
 )
 
+# What a browser would actually parse as a document. Anything else fed to
+# html.parser produces a soup of decoded binary: no images, no inputs, no
+# colours, an empty issue list and a PASS -- the tool reporting success on
+# something it never read.
+HTML_TYPES = ("text/html", "application/xhtml+xml")
+
+
+class UnsupportedContent(ValueError):
+    """The URL returned something that is not an HTML document."""
+
 
 def stamp_ids(soup):
     """Give every element a stable identity before anything is modified."""
@@ -59,6 +69,15 @@ class Scraper:
         """
         issues = []
         req = nethttp.get(url)
+        req.raise_for_status()
+
+        # An empty content-type is allowed through: plenty of small servers
+        # send none at all, and a browser sniffs those as HTML.
+        content_type = req.headers.get("content-type", "").split(";")[0].strip().lower()
+        if content_type and content_type not in HTML_TYPES:
+            raise UnsupportedContent(
+                f"that URL returned {content_type}, not an HTML page")
+
         self.soup = BeautifulSoup(req.text, 'html.parser')
         self.url = req.url          # post-redirect, so relative paths resolve correctly
         self.html = req.text

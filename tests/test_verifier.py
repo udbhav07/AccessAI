@@ -171,6 +171,25 @@ try:
           named(report, "Pixels").summary)
     check("overall verdict is PASS", report.verdict == "PASS", report.verdict)
 
+    print("\n[4a] non-HTML responses are refused")
+
+    try:
+        Scraper().scrape_url(f"{BASE}/demo_theme.css")
+        _refused_css = False
+    except webScraper.UnsupportedContent:
+        _refused_css = True
+    check("a stylesheet URL is not parsed as a page", _refused_css)
+
+    try:
+        Scraper().scrape_url(f"{BASE}/does-not-exist.html")
+        _refused_404 = False
+    except Exception:
+        _refused_404 = True
+    check("a 404 is not scraped as if it were the page", _refused_404)
+
+    check("an html fixture is still accepted",
+          Scraper().scrape_url(f"{BASE}/experiment.html").soup is not None)
+
     print("\n[4b] a failed getAlt leaves the image alone")
 
     # webScraper does `from .gemini import getAlt`, so the name is bound in
