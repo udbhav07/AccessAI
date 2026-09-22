@@ -26,8 +26,6 @@ __pycache__/
 # --- Runtime output --------------------------------------------------------
 # Verifier run store: holds full copies of scraped third-party pages.
 runs/
-# Screenshots written by the app at request time.
-static/*_screenshot.png
 
 # --- Tooling / test artifacts ----------------------------------------------
 .pytest_cache/
