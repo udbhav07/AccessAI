@@ -13,5 +13,6 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m playwright install --with-deps chromium
       - run: python tests/test_nethttp.py
+      - run: python tests/test_app.py
       - run: python tests/test_colors.py
       - run: python tests/test_verifier.py
