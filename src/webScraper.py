@@ -114,12 +114,21 @@ class Scraper:
         with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(targets))) as pool:
             alts = list(pool.map(lambda t: getAlt(t[1]), targets))
 
-        issues = []
+        issues, skipped = [], 0
         for (img, _), alt in zip(targets, alts):
+            if not alt:         # getAlt gave up; leave the image untouched
+                skipped += 1
+                continue
             img['alt'] = alt
             issues.append({
                 "type": "alt", "source": "image", "target": img.get('src'),
                 "old": "", "new": alt, "ids": [img.get(ID_ATTR)],
+            })
+        if skipped:
+            issues.append({
+                "type": "alt", "source": "skipped", "target": None,
+                "old": None, "new": None, "ids": [],
+                "note": f"{skipped} image(s) could not be described",
             })
         return issues
 

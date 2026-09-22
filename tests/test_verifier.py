@@ -28,7 +28,7 @@ sys.modules["src.gemini"] = _stub
 sys.modules["gemini"] = _stub
 
 from bs4 import BeautifulSoup                                      # noqa: E402
-from src import nethttp, runstore, verifier                        # noqa: E402
+from src import nethttp, runstore, verifier, webScraper            # noqa: E402
 from src.webScraper import Scraper, stamp_ids, strip_ids           # noqa: E402
 
 PORT = 8791
@@ -162,6 +162,29 @@ try:
     check("pixels within tolerance", named(report, "Pixels").passed,
           named(report, "Pixels").summary)
     check("overall verdict is PASS", report.verdict == "PASS", report.verdict)
+
+    print("\n[4b] a failed getAlt leaves the image alone")
+
+    # webScraper does `from .gemini import getAlt`, so the name is bound in
+    # that module -- swapping it on the stub module would have no effect.
+    _real_getAlt = webScraper.getAlt
+    webScraper.getAlt = lambda src: None          # every call fails
+    try:
+        dud = Scraper().scrape_url(f"{BASE}/experiment.html")
+    finally:
+        webScraper.getAlt = _real_getAlt
+
+    alt_written = [i for i in dud.soup.find_all("img") if i.get("alt")]
+    check("no alt attribute is written when the call fails",
+          alt_written == [], [i.get("alt") for i in alt_written])
+    cov = verifier.check_coverage(
+        BeautifulSoup(dud.html_before, "html.parser"),
+        BeautifulSoup(str(dud.soup), "html.parser"))
+    check("coverage reports 0/4, not a placeholder 4/4",
+          "alt 0/4 -> 0/4" in cov.summary, cov.summary)
+    check("the skip is reported rather than silent",
+          any(i.get("source") == "skipped" for i in dud.issues),
+          [i.get("source") for i in dud.issues])
 
     print("\n[5] deliberate breaks — a verifier that never fails isn't a verifier")
 

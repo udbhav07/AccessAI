@@ -18,10 +18,18 @@ genai.configure(api_key=os.getenv("GEMAPI"))
 model = genai.GenerativeModel("gemini-1.5-flash")
 
 def getAlt(src):
+    """Describe an image, or return None meaning "leave this one alone".
+
+    None rather than a placeholder string: writing "Image description not
+    available" into alt makes a screen reader announce that sentence for every
+    image, which is worse than no alt at all -- and the coverage check counts
+    any non-empty alt as a success, so a total API outage used to report 4/4.
+    Same reasoning as getLabel returning 'y'.
+    """
     try:
         response = nethttp.get(src, max_bytes=MAX_IMAGE_BYTES)
         if not response.headers.get("content-type", "").lower().startswith("image/"):
-            return "Image description not available"
+            return None
 
         data = response.content
         # verify() consumes the file object, so the image has to be reopened
@@ -34,7 +42,8 @@ def getAlt(src):
         return response.text.split("[")[1].split("]")[0]
 
     except Exception as e:
-        return "Image description not available"
+        print(f"getAlt failed for {src}: {e}")
+        return None
 
 def is_suitable_label(label, inp):
     isSuitable = model.generate_content(f"give answers in square brackets, Give True if current label is a suitable label to the input field else give False, Label: {label}; input: {inp}; ")
