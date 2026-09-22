@@ -335,12 +335,14 @@ ID_ATTR = "data-aai-id"
 
 
 def _record(report, source, target, old, new, before, after, ids=()):
+    # str() on the colours and the selector: cssutils hands back its own
+    # string subclasses, and the report gets written to the run store as JSON.
     report.append({
         "type": "contrast",
         "source": source,
-        "target": target,
-        "old": old,
-        "new": new,
+        "target": str(target) if target is not None else None,
+        "old": str(old) if old is not None else None,
+        "new": str(new) if new is not None else None,
         "ratio_before": round(before, 2) if before is not None else None,
         "ratio_after": round(after, 2) if after is not None else None,
         "ids": [i for i in ids if i],

@@ -100,6 +100,60 @@
         </div>
         {% endif %}
 
+        {% if issues %}
+        {% set changes = issues | selectattr('new') | list %}
+        {% set skipped = issues | rejectattr('new') | list %}
+        <div class="changes mt-4">
+            <h2 class="pb-2">
+                {{ changes | length }} change{{ '' if changes | length == 1 else 's' }} applied
+            </h2>
+            {% if changes %}
+            <table class="table table-sm align-middle">
+                <thead>
+                    <tr>
+                        <th scope="col">Type</th>
+                        <th scope="col">Where</th>
+                        <th scope="col">Before</th>
+                        <th scope="col">After</th>
+                        <th scope="col">Contrast</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for issue in changes %}
+                    <tr>
+                        <td><span class="badge bg-secondary">{{ issue.type }}</span></td>
+                        <td class="font-monospace small">{{ issue.target or '—' }}</td>
+                        <td class="font-monospace small">
+                            {{ issue.old if issue.old else '(none)' }}
+                        </td>
+                        <td class="font-monospace small">{{ issue.new }}</td>
+                        <td class="small">
+                            {% if issue.ratio_before %}
+                            {{ issue.ratio_before }}:1 &rarr; <strong>{{ issue.ratio_after }}:1</strong>
+                            {% else %}&mdash;{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+
+            {% if skipped %}
+            <details class="mb-3">
+                <summary>{{ skipped | length }} left alone</summary>
+                <ul class="small">
+                    {% for issue in skipped %}
+                    <li>
+                        <span class="font-monospace">{{ issue.target or issue.type }}</span>
+                        &mdash; {{ issue.reason or issue.note or 'not changed' }}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </details>
+            {% endif %}
+        </div>
+        {% endif %}
+
         <div class="out">
             {% if output %}
                 <h2 class="pb-2">Output: </h2>

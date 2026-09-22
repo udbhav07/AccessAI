@@ -46,7 +46,13 @@ def index():
         run_id,
         result.html_before,
         html,
-        {"url": result.url, "modified_ids": sorted(result.modified_ids)},
+        {
+            "url": result.url,
+            "modified_ids": sorted(result.modified_ids),
+            # Kept so /verify can show the same list again -- rebuilding it
+            # would mean a second scrape, and Gemini would answer differently.
+            "issues": result.issues,
+        },
     )
 
     return render_template(
@@ -71,6 +77,7 @@ def verify():
         )
 
     before_html, after_html, meta = run
+    issues = meta.get("issues", [])
     try:
         report = verifier.run_checks(
             meta.get("url", ""), before_html, after_html, meta.get("modified_ids", [])
@@ -84,6 +91,7 @@ def verify():
             "index.html",
             output=after_html,
             run_id=run_id,
+            issues=issues,
             error="Verification could not be completed.",
         )
 
@@ -91,6 +99,7 @@ def verify():
         "index.html",
         output=after_html,
         run_id=run_id,
+        issues=issues,
         report=report.as_dict(),
     )
 

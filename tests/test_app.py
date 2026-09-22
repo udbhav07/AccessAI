@@ -125,6 +125,59 @@ check("200 on a good scrape", response.status_code == 200, response.status_code)
 check("the output iframe is rendered", b"<iframe" in response.data)
 check("the verify button appears", b'id="verify-btn"' in response.data)
 
+print("\n[4b] the issue list is actually rendered")
+
+FakeScraper.result = ScrapeResult(
+    url="http://example.com/",
+    soup=soup,
+    issues=[
+        {"type": "alt", "source": "image", "target": "cat.png",
+         "old": "", "new": "a sleeping cat", "ids": ["1"]},
+        {"type": "contrast", "source": "inline", "target": "h2",
+         "old": "#00f", "new": "#8888ff", "ratio_before": 2.1,
+         "ratio_after": 4.9, "ids": ["2"]},
+        {"type": "contrast-skipped", "source": "unresolvable", "target": "p",
+         "old": None, "new": None, "ratio_before": None, "ratio_after": None,
+         "reason": "text sits on a non-uniform background", "ids": []},
+    ],
+    html_before="<html><body><p data-aai-id='1'>hi</p></body></html>",
+    modified_ids={"1", "2"},
+)
+response = post()
+body = response.data
+check("the count reflects the changes only", b"2 changes applied" in body,
+      body[body.find(b"applied") - 40:body.find(b"applied") + 10])
+check("an alt fix is listed", b"a sleeping cat" in body)
+check("a contrast fix shows its old colour", b"#00f" in body)
+check("...and its new one", b"#8888ff" in body)
+check("...and the ratio it moved between",
+      b"2.1:1" in body and b"4.9:1" in body)
+check("an abstention is not counted as a change",
+      b"1 left alone" in body, body[-400:])
+check("...and its reason is given", b"non-uniform background" in body)
+
+print("\n[4c] a run's issues survive into /verify")
+
+# The scrape above wrote a run; pick up the newest one rather than reaching
+# into the response for an id the page only carries in a hidden field.
+_runs_dir = os.path.join(ROOT, "runs")
+rid_issues = max(os.listdir(_runs_dir),
+                 key=lambda d: os.path.getmtime(os.path.join(_runs_dir, d)))
+
+_real = webapp.verifier.run_checks
+
+
+class _Rep:
+    def as_dict(self):
+        return {"verdict": "PASS", "error": None, "checks": []}
+
+
+webapp.verifier.run_checks = lambda *a, **k: _Rep()
+response = client.post("/verify", data={"run_id": rid_issues})
+webapp.verifier.run_checks = _real
+check("the same change list is shown again after verifying",
+      b"a sleeping cat" in response.data, response.data[-300:])
+
 print("\n[5] /verify on an expired or bogus run")
 
 response = client.post("/verify", data={"run_id": "deadbeef"})
