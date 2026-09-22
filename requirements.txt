@@ -1,14 +1,26 @@
 # pip install -r requirements.txt
 # then: python -m playwright install chromium
+#
+# Pinned to compatible releases: cssutils, playwright and the Gemini SDK all
+# make breaking changes, and an unpinned deploy could differ from a working
+# local install with nothing in the repo to explain why.
 
-flask
-requests
-bs4
-Pillow
-cssutils
-google-generativeai
-python-dotenv
+flask~=3.1
+requests~=2.32
+beautifulsoup4~=4.14          # `bs4` is only a stub that depends on this
+Pillow~=11.3
+cssutils~=2.15
+python-dotenv~=1.0
+
+# TODO: google-generativeai is superseded upstream by google-genai, and
+# gemini-1.5-flash (src/gemini.py) will eventually be retired. Migration is its
+# own task, not a pin bump.
+google-generativeai~=0.8
 
 # verification (verifier.py)
-playwright
-numpy
+playwright~=1.62
+numpy~=2.3
+
+# serving. Marked: gunicorn has no Windows build, and `pip install -r` on a
+# Windows dev machine would otherwise fail outright. Local dev uses app.run().
+gunicorn~=23.0; sys_platform != "win32"
