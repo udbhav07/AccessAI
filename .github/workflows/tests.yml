@@ -16,10 +16,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m playwright install --with-deps chromium
-      - run: python tests/test_nethttp.py
-      - run: python tests/test_gemini.py
-      - run: python tests/test_app.py
-      - run: python tests/test_colors.py
-      - run: python tests/test_verifier.py
+      - run: python -m pytest

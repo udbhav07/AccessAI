@@ -1,308 +1,50 @@
 """Offline tests for the colour-contrast remediation.
 
-Gemini is stubbed out, so the suite is deterministic, free, and needs no API
-key or network. Run with:  python test_colors.py
+No key, no network: the model is stubbed in conftest, and `suggestions`
+below replaces the one call webColorss makes so a test can dictate what the
+model "answers" and count how often it was asked.
 """
 
+import os
 import types
 
-import os
-import sys
+import pytest
+from bs4 import BeautifulSoup
 
-# Tests live in tests/ but import the package from the project root, so put the
-# root on sys.path before anything else. Works no matter where you run from.
+from src import webColorss as wc
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-
-
-# --- stub gemini before webColorss imports it -------------------------------
-_stub = types.ModuleType("gemini")
-_stub.suggest_calls = []
-_stub.suggest_reply = None          # what the fake model "returns"
-
-
-def _suggest_text_color(fg, bg):
-    _stub.suggest_calls.append((fg, bg))
-    return _stub.suggest_reply
-
-
-_stub.suggest_text_color = _suggest_text_color
-# webColorss does `from .gemini import ...`, which resolves to the
-# absolute name src.gemini -- so that is the key to stub.
-sys.modules["src.gemini"] = _stub
-sys.modules["gemini"] = _stub
-
-from bs4 import BeautifulSoup                                   # noqa: E402
-from src import webColorss as wc                                # noqa: E402
-
-PASSED, FAILED = 0, 0
-
-
-def check(name, condition, detail=""):
-    global PASSED, FAILED
-    if condition:
-        PASSED += 1
-        print(f"  PASS  {name}")
-    else:
-        FAILED += 1
-        print(f"  FAIL  {name}   {detail}")
+FIXTURES = os.path.join(ROOT, "tests", "fixtures")
 
 
 def soup_of(html):
     return BeautifulSoup(html, "html.parser")
 
 
-def ratio_of(el_style_color, bg):
-    return wc.check_contrast(el_style_color, bg)
+def fixes(report):
+    """Only the entries that changed a colour -- abstentions carry no ratio."""
+    return [e for e in report if e["type"] == "contrast"]
 
 
-# ---------------------------------------------------------------------------
-print("\n[1] colour parsing — named colours were the hidden blocker")
+def abstentions(report):
+    return [e for e in report if e["type"] == "contrast-skipped"]
 
-check("named colour resolves", wc.resolve_color("cadetblue") == (95, 158, 160),
-      wc.resolve_color("cadetblue"))
-check("short hex resolves", wc.resolve_color("#00f") == (0, 0, 255))
-check("rgb() resolves", wc.resolve_color("rgb(255, 0, 0)") == (255, 0, 0))
-check("!important stripped", wc.resolve_color("black !important") == (0, 0, 0))
-check("transparent -> None", wc.resolve_color("transparent") is None)
-check("inherit -> None", wc.resolve_color("inherit") is None)
-check("currentColor -> None", wc.resolve_color("currentColor") is None)
-check("zero-alpha rgba -> None", wc.resolve_color("rgba(0,0,0,0)") is None)
-check("garbage -> None", wc.resolve_color("no-repeat") is None)
-check("None -> None", wc.resolve_color(None) is None)
 
-print("\n[2] contrast maths")
+@pytest.fixture
+def suggestions(monkeypatch):
+    """Control and record what the model suggests.
 
-check("black on white is 21:1", abs(wc.check_contrast("black", "white") - 21.0) < 0.01,
-      wc.check_contrast("black", "white"))
-check("identical colours are 1:1", abs(wc.check_contrast("#123456", "#123456") - 1.0) < 0.01)
-aqua_cadet = wc.check_contrast("cadetblue", "aqua")
-check("demo #ab pair is ~2.4:1 (was 1.0 before the fix)",
-      2.3 < aqua_cadet < 2.5, f"got {aqua_cadet}")
-check("unresolvable returns None (not a fake 0.5)",
-      wc.check_contrast("transparent", "white") is None)
+    `reply` is what it answers; `calls` is every (fg, bg) it was asked about.
+    The default of None forces the deterministic path.
+    """
+    state = types.SimpleNamespace(reply=None, calls=[])
 
-print("\n[3] deterministic fallback always clears 4.5:1")
+    def fake(fg, bg):
+        state.calls.append((fg, bg))
+        return state.reply
 
-worst = 99.0
-for r in range(0, 256, 15):
-    for g in range(0, 256, 15):
-        for b in range(0, 256, 15):
-            bg = (r, g, b)
-            fixed = wc._deterministic_color((128, 128, 128), bg, wc.WCAG_AA_NORMAL)
-            got = wc.check_contrast(fixed, wc._to_hex(bg))
-            worst = min(worst, got)
-check("every background reaches >= 4.5:1", worst >= wc.WCAG_AA_NORMAL,
-      f"worst was {worst:.3f}")
-print(f"        (worst case across 5,832 backgrounds: {worst:.2f}:1)")
-
-print("\n[4] ensure_contrast — verify the model, then fall back")
-
-_stub.suggest_calls.clear()
-_stub.suggest_reply = "#ffffff"                    # a good suggestion
-got = wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget())
-check("accepts a passing suggestion", got == "#ffffff", got)
-
-_stub.suggest_reply = "#0000ee"                    # still fails on black
-got = wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget())
-check("rejects a failing suggestion", got != "#0000ee", got)
-check("...and the fallback passes", wc.check_contrast(got, "#000") >= 4.5)
-
-_stub.suggest_reply = "not a colour at all"
-got = wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget())
-check("survives an unparseable suggestion", wc.check_contrast(got, "#000") >= 4.5)
-
-_stub.suggest_reply = None                         # API failure
-got = wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget())
-check("survives a total API failure", wc.check_contrast(got, "#000") >= 4.5)
-
-_stub.suggest_reply = "#ffffff"
-_stub.suggest_calls.clear()
-shared = wc.ColourBudget()
-for _ in range(30):
-    wc.ensure_contrast("#00f", "#000", budget=shared)
-check("cache collapses 30 identical pairs to 1 call",
-      len(_stub.suggest_calls) == 1, f"{len(_stub.suggest_calls)} calls")
-
-_stub.suggest_calls.clear()
-shared = wc.ColourBudget()
-for i in range(40):                                 # 40 distinct pairs
-    wc.ensure_contrast(f"#0000{i:02x}", "#000", budget=shared)
-check(f"call budget caps at {wc.MAX_GEMINI_CALLS}",
-      len(_stub.suggest_calls) == wc.MAX_GEMINI_CALLS, f"{len(_stub.suggest_calls)} calls")
-
-# The whole point of making this an object: one page's allowance and one
-# page's cached decisions must not reach another page.
-_stub.suggest_calls.clear()
-budget_a, budget_b = wc.ColourBudget(), wc.ColourBudget()
-wc.ensure_contrast("#00f", "#000", budget=budget_a)
-wc.ensure_contrast("#00f", "#000", budget=budget_b)
-check("two budgets do not share a cache", len(_stub.suggest_calls) == 2,
-      f"{len(_stub.suggest_calls)} calls")
-check("...nor a counter", budget_a.used == 1 and budget_b.used == 1,
-      (budget_a.used, budget_b.used))
-
-print("\n[5] inline styles")
-
-_stub.suggest_reply = None                          # force deterministic everywhere
-report = []
-s = soup_of('<h2 style="background-color: #000; color: #00f; padding: 2em">line-1</h2>')
-wc.fix_inline_styles(s, report)
-h2 = s.find("h2")
-check("blue-on-black was fixed", "#00f" not in h2["style"].lower(), h2["style"])
-check("...to a passing colour",
-      wc.check_contrast(wc.cssutils.parseStyle(h2["style"]).getPropertyValue("color"),
-                        "#000") >= 4.5)
-check("padding survived (whole-attribute bug fixed)", "padding" in h2["style"], h2["style"])
-check("report has one entry", len(report) == 1, report)
-
-report = []
-s = soup_of('<h2 style="background-color: black">line-2</h2>')
-wc.fix_inline_styles(s, report)
-h2 = s.find("h2")
-colour = wc.cssutils.parseStyle(h2["style"]).getPropertyValue("color")
-check("line-2 (bg only, inherited black text) was fixed", bool(colour), h2["style"])
-check("...to a passing colour", wc.check_contrast(colour, "black") >= 4.5)
-
-report = []
-s = soup_of('<div style="background:black"><h2 style="color:#111">deep</h2></div>')
-wc.fix_inline_styles(s, report)
-colour = wc.cssutils.parseStyle(s.find("h2")["style"]).getPropertyValue("color")
-check("ancestor background walk works", wc.check_contrast(colour, "black") >= 4.5, colour)
-check("`background:` shorthand was understood", len(report) >= 1)
-
-report = []
-s = soup_of('<p style="color:#000; background:#fff">fine</p>')
-wc.fix_inline_styles(s, report)
-check("passing pair is left alone", report == [], report)
-
-report = []
-s = soup_of('<p style="padding:4px">no colours</p>')
-wc.fix_inline_styles(s, report)
-check("element with no colour declarations is skipped", report == [])
-
-print("\n[5b] abstaining instead of assuming a white canvas")
-
-report = []
-# The theme is in a stylesheet this pass cannot read. Guessing white here is
-# what made the fixer push text on a dark page *darker*.
-s = soup_of('<html><head><style>body{background:#000}</style></head>'
-            '<body><p style="color:#333">dim</p></body></html>')
-wc.fix_inline_styles(s, report)
-colour = wc.cssutils.parseStyle(s.find("p")["style"]).getPropertyValue("color")
-check("the element is left alone rather than darkened",
-      colour.lower() in ("#333", "#333333"), colour)
-check("...and the abstention is reported, not silent",
-      any(e["type"] == "contrast-skipped" for e in report), report)
-
-report = []
-s = soup_of('<html><head><link rel="stylesheet" href="t.css"></head>'
-            '<body><p style="color:#333">dim</p></body></html>')
-wc.fix_inline_styles(s, report)
-check("a linked sheet counts as unreadable too",
-      any(e["type"] == "contrast-skipped" for e in report), report)
-
-report = []
-s = soup_of('<html><body><p style="color:#eee">pale</p></body></html>')
-wc.fix_inline_styles(s, report)
-check("with no stylesheet at all, the white canvas is still assumed",
-      any(e["type"] == "contrast" for e in report), report)
-
-check("document_has_stylesheets sees a <style> block",
-      wc.document_has_stylesheets(soup_of("<style>p{color:red}</style>")))
-check("...and a linked stylesheet",
-      wc.document_has_stylesheets(soup_of('<link rel="stylesheet" href="a.css">')))
-check("...but not a favicon",
-      not wc.document_has_stylesheets(soup_of('<link rel="icon" href="f.ico">')))
-check("...and not a bare document",
-      not wc.document_has_stylesheets(soup_of("<p>hi</p>")))
-
-print("\n[5c] an image or gradient backdrop is not a colour")
-
-report = []
-s = soup_of('<p style="color:#888; background:url(hero.png) #fff">on a photo</p>')
-wc.fix_inline_styles(s, report)
-check("text over a background image is not judged against the flat colour",
-      all(e["type"] == "contrast-skipped" for e in report), report)
-check("...and its colour is untouched", "#888" in s.find("p")["style"],
-      s.find("p")["style"])
-
-report = []
-s = soup_of('<p style="color:#888; background:linear-gradient(#000,#fff)">grad</p>')
-wc.fix_inline_styles(s, report)
-check("a gradient backdrop abstains too",
-      any(e["type"] == "contrast-skipped" for e in report), report)
-
-report = []
-s = soup_of('<div style="background:url(hero.png)"><p style="color:#eee">x</p></div>')
-wc.fix_inline_styles(s, report)
-check("the walk stops at an image ancestor rather than falling through to white",
-      any(e["type"] == "contrast-skipped" for e in report), report)
-
-report = []
-# A colour behind an image is still not what the text sits on -- the image
-# paints over it wherever it covers, so this abstains as well.
-s = soup_of('<p style="color:#888; background:url(hero.png) no-repeat #000">both</p>')
-wc.fix_inline_styles(s, report)
-check("a colour behind an image does not make it judgeable",
-      any(e["type"] == "contrast-skipped" for e in report), report)
-
-report = []
-s = soup_of('<p style="color:#333; background-color:#000">flat</p>')
-wc.fix_inline_styles(s, report)
-check("a plain background-color is unaffected by any of this",
-      any(e["type"] == "contrast" for e in report), report)
-
-report = []
-s = soup_of("<style>.hero{background:url('img/x.png') no-repeat;color:#888}</style>")
-wc.fix_style_blocks(s, "https://example.com/page.html", report)
-check("a stylesheet rule over an image abstains",
-      any(e["type"] == "contrast-skipped" for e in report), report)
-check("...and the url is still absolutised",
-      "https://example.com/img/x.png" in s.find("style").string, s.find("style").string)
-
-print("\n[6] presentational attributes")
-
-report = []
-s = soup_of('<body bgcolor="#000000" text="#0000ff"><p>hi</p></body>')
-wc.fix_presentational_attributes(s, report)
-body = s.find("body")
-check("body text= fixed against bgcolor=", wc.check_contrast(body["text"], "#000000") >= 4.5,
-      body["text"])
-check("bgcolor left untouched", body["bgcolor"] == "#000000")
-check("no inline style was introduced (cascade preserved)",
-      body.get("style") is None, body.get("style"))
-
-report = []
-s = soup_of('<body bgcolor="black"><font color="#222">dim</font></body>')
-wc.fix_presentational_attributes(s, report)
-check("<font color> fixed against ancestor bgcolor",
-      wc.check_contrast(s.find("font")["color"], "black") >= 4.5, s.find("font")["color"])
-
-report = []
-s = soup_of('<body bgcolor="white" text="black"></body>')
-wc.fix_presentational_attributes(s, report)
-check("passing attribute pair left alone", report == [], report)
-
-print("\n[7] <style> blocks")
-
-report = []
-css = "#ab{background-color:aqua;color:cadetblue}\n.hero{background:url('img/x.png') no-repeat}"
-s = soup_of(f"<style>{css}</style>")
-wc.fix_style_blocks(s, "https://example.com/assets/page.html", report)
-out = s.find("style").string
-check("aqua/cadetblue rule was fixed", "cadetblue" not in out, out)
-check("report names the selector",
-      any(e["target"] == "#ab" for e in report), report)
-check("ratio_before ~2.4 recorded",
-      any(2.3 < (e["ratio_before"] or 0) < 2.5 for e in report), report)
-check("ratio_after clears 4.5",
-      all((e["ratio_after"] or 0) >= 4.5 for e in report), report)
-check("url() absolutised against the page",
-      "https://example.com/assets/img/x.png" in out, out)
-check("selector '>' not HTML-escaped", "&gt;" not in out)
-
-print("\n[8] external <link> stylesheets")
+    monkeypatch.setattr(wc, "suggest_text_color", fake)
+    return state
 
 
 class FakeResponse:
@@ -314,128 +56,359 @@ class FakeResponse:
         pass
 
 
-fetched = []
+@pytest.fixture
+def sheets(monkeypatch):
+    """Serve canned stylesheets and record which URLs were fetched."""
+    state = types.SimpleNamespace(files={}, fetched=[])
+
+    def fake_get(url, timeout=None, max_bytes=None):
+        state.fetched.append(url)
+        for suffix, body in state.files.items():
+            if url.endswith(suffix):
+                return FakeResponse(body)
+        raise wc.requests.RequestException("404")
+
+    monkeypatch.setattr(wc.nethttp, "get", fake_get)
+    return state
 
 
-def fake_get(url, timeout=None, max_bytes=None):
-    fetched.append(url)
-    if url.endswith("bad.css"):
-        return FakeResponse("#ab{background-color:aqua;color:cadetblue}"
-                            ".h{background:url('img/hero.png')}")
-    if url.endswith("good.css"):
-        return FakeResponse("p{color:#000;background-color:#fff}")
-    raise wc.requests.RequestException("404")
+# --- colour parsing: named colours were the hidden blocker ------------------
+
+@pytest.mark.parametrize("value,expected", [
+    ("cadetblue", (95, 158, 160)),
+    ("#00f", (0, 0, 255)),
+    ("rgb(255, 0, 0)", (255, 0, 0)),
+    ("black !important", (0, 0, 0)),
+])
+def test_colours_that_resolve(value, expected):
+    assert wc.resolve_color(value) == expected
 
 
-wc.nethttp.get = fake_get
-
-report, fetched[:] = [], []
-s = soup_of('<link rel="stylesheet" href="css/bad.css">'
-            '<link rel="stylesheet" href="css/good.css">'
-            '<link rel="stylesheet" href="css/missing.css">'
-            '<link rel="icon" href="favicon.ico">')
-wc.fix_linked_stylesheets(s, "https://example.com/page.html", report)
-
-check("per-sheet URL used for the fetch",
-      "https://example.com/css/bad.css" in fetched, fetched)
-check("non-stylesheet <link rel=icon> skipped",
-      not any("favicon" in u for u in fetched), fetched)
-check("modified sheet was inlined",
-      s.find("style") is not None and "cadetblue" not in s.find("style").string)
-check("url() resolved against the SHEET, not the page",
-      "https://example.com/css/img/hero.png" in s.find("style").string,
-      s.find("style").string)
-check("unmodified sheet stays a <link>",
-      any(l.get("href", "").endswith("good.css") for l in s.find_all("link")),
-      [l.get("href") for l in s.find_all("link")])
-check("unreachable sheet leaves its <link> intact",
-      any(l.get("href", "").endswith("missing.css") for l in s.find_all("link")))
-check("<link rel=icon> untouched",
-      any(l.get("href") == "favicon.ico" for l in s.find_all("link")))
-
-print("\n[9] ChangeColor end-to-end on the demo fixture")
+@pytest.mark.parametrize("value", [
+    "transparent", "inherit", "currentColor", "rgba(0,0,0,0)", "no-repeat", None,
+])
+def test_values_that_carry_no_colour(value):
+    """None means skip this element -- never silently treated as a real colour."""
+    assert wc.resolve_color(value) is None
 
 
+# --- contrast maths ---------------------------------------------------------
 
-def fixture_get(url, timeout=None, max_bytes=None):
-    return FakeResponse("#ab{background-color:aqua;color:cadetblue}")
-
-
-wc.nethttp.get = fixture_get
-
-demo = """<html><head>
-<link rel="stylesheet" href="demostyles.css">
-</head><body>
-<div><h2 style="background-color: #000; color: #00f;">line-1</h2></div>
-<div><h2 style="background-color: black;">line-2</h2></div>
-<div><h2 id="ab">line-3</h2></div>
-<div><h2 id="abc">line-4</h2></div>
-</body></html>"""
-
-s = soup_of(demo)
-issues = wc.ChangeColor("http://localhost:8000/experiment.html", s)
-sources = {e["source"] for e in issues}
-# Abstentions carry no colour and no ratio on purpose, so the assertions
-# about emitted colours are about the fixes only.
-fixes = [e for e in issues if e["type"] == "contrast"]
-
-check("returned a real report (was always [] before)", len(issues) >= 3, len(issues))
-check("inline failures detected", "inline" in sources, sources)
-check("stylesheet failure detected", "stylesheet" in sources, sources)
-check("every emitted colour passes 4.5:1",
-      all((e["ratio_after"] or 0) >= 4.5 for e in fixes),
-      [(e["target"], e["ratio_after"]) for e in fixes])
-check("every fix was a genuine improvement",
-      all(e["ratio_after"] > e["ratio_before"] for e in fixes))
-check("#ab (2.4:1, stylesheet-only) is now fixed — the case the old code could never see",
-      any(e["target"] == "#ab" for e in issues), [e["target"] for e in issues])
+def test_black_on_white_is_21_to_1():
+    assert abs(wc.check_contrast("black", "white") - 21.0) < 0.01
 
 
-print("")
-print("[10] the four-source fixture (tests/fixtures/demo_all_sources.html)")
-
-FIXTURE_URL = "http://example.com/tests/fixtures/demo_all_sources.html"
-_fixture_css = open(os.path.join(ROOT, "tests", "fixtures", "demo_theme.css"), encoding="utf-8").read()
+def test_identical_colours_are_1_to_1():
+    assert abs(wc.check_contrast("#123456", "#123456") - 1.0) < 0.01
 
 
-def fixture_fetch(url, timeout=None, max_bytes=None):
-    if url.endswith("demo_theme.css"):
-        return FakeResponse(_fixture_css)
-    raise wc.requests.RequestException("404")
+def test_the_demo_pair_is_about_2_4():
+    """cadetblue on aqua. The old parser scored every named colour 1.0."""
+    assert 2.3 < wc.check_contrast("cadetblue", "aqua") < 2.5
 
 
-wc.nethttp.get = fixture_fetch
-_stub.suggest_reply = None                      # deterministic path only
+def test_unresolvable_returns_none_not_a_fake_midpoint():
+    assert wc.check_contrast("transparent", "white") is None
 
-with open(os.path.join(ROOT, "tests", "fixtures", "demo_all_sources.html"), encoding="utf-8") as fh:
-    fixture = soup_of(fh.read())
-fixture_issues = wc.ChangeColor(FIXTURE_URL, fixture)
-by_source = {}
-for e in fixture_issues:
-    by_source.setdefault(e["source"], []).append(e)
 
-for src, human in (("inline", "1. inline style"), ("attribute", "2. legacy attribute"),
-                   ("style-block", "3. <style> block"), ("stylesheet", "4. external sheet")):
-    check("fixture exercises " + human, src in by_source, sorted(by_source))
+def test_deterministic_fallback_clears_the_threshold_on_every_background():
+    worst = 99.0
+    for r in range(0, 256, 15):
+        for g in range(0, 256, 15):
+            for b in range(0, 256, 15):
+                fixed = wc._deterministic_color((128, 128, 128), (r, g, b),
+                                                wc.WCAG_AA_NORMAL)
+                worst = min(worst, wc.check_contrast(fixed, wc._to_hex((r, g, b))))
+    assert worst >= wc.WCAG_AA_NORMAL, f"worst case was {worst:.3f}:1"
 
-check("fixture: every emitted colour passes 4.5:1",
-      all(e["ratio_after"] >= 4.5 for e in fixture_issues),
-      [(e["target"], e["ratio_after"]) for e in fixture_issues])
-check("fixture: every fix is a genuine improvement",
-      all(e["ratio_after"] > e["ratio_before"] for e in fixture_issues))
-check("fixture: inline padding survived",
-      "padding" in fixture.find("h2")["style"], fixture.find("h2")["style"])
-check("fixture: bgcolor left untouched",
-      fixture.find("body")["bgcolor"] == "#000000")
-check("fixture: no inline style added to <body> (cascade preserved)",
-      fixture.find("body").get("style") is None)
-check("fixture: external sheet inlined",
-      fixture.find("link", rel="stylesheet") is None)
-check("fixture: url() absolutised against the SHEET",
-      "http://example.com/tests/fixtures/img/hero.png" in str(fixture),
-      "url() not rewritten")
 
-print("\n" + "=" * 62)
-print(f"  {PASSED} passed, {FAILED} failed")
-print("=" * 62)
-sys.exit(1 if FAILED else 0)
+# --- ensure_contrast: verify the model, then fall back ----------------------
+
+def test_a_passing_suggestion_is_accepted(suggestions):
+    suggestions.reply = "#ffffff"
+    assert wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget()) == "#ffffff"
+
+
+@pytest.mark.parametrize("reply", ["#0000ee", "not a colour at all", None])
+def test_a_suggestion_that_does_not_pass_is_replaced(suggestions, reply):
+    suggestions.reply = reply
+    got = wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget())
+    assert got != reply
+    assert wc.check_contrast(got, "#000") >= 4.5
+
+
+def test_cache_collapses_repeated_pairs_to_one_call(suggestions):
+    suggestions.reply = "#ffffff"
+    budget = wc.ColourBudget()
+    for _ in range(30):
+        wc.ensure_contrast("#00f", "#000", budget=budget)
+    assert len(suggestions.calls) == 1
+
+
+def test_the_call_budget_caps(suggestions):
+    suggestions.reply = "#ffffff"
+    budget = wc.ColourBudget()
+    for i in range(40):                       # 40 distinct pairs
+        wc.ensure_contrast(f"#0000{i:02x}", "#000", budget=budget)
+    assert len(suggestions.calls) == wc.MAX_GEMINI_CALLS
+
+
+def test_two_budgets_share_nothing(suggestions):
+    """The whole reason this is an object: one page must not reach another."""
+    suggestions.reply = "#ffffff"
+    a, b = wc.ColourBudget(), wc.ColourBudget()
+    wc.ensure_contrast("#00f", "#000", budget=a)
+    wc.ensure_contrast("#00f", "#000", budget=b)
+    assert len(suggestions.calls) == 2
+    assert a.used == 1 and b.used == 1
+
+
+# --- inline styles ----------------------------------------------------------
+
+def test_blue_on_black_is_fixed_and_padding_survives(suggestions):
+    report = []
+    s = soup_of('<h2 style="background-color: #000; color: #00f; padding: 2em">x</h2>')
+    wc.fix_inline_styles(s, report)
+
+    style = s.find("h2")["style"]
+    assert "#00f" not in style.lower()
+    assert wc.check_contrast(
+        wc.cssutils.parseStyle(style).getPropertyValue("color"), "#000") >= 4.5
+    assert "padding" in style, "the whole style attribute used to be replaced"
+    assert len(report) == 1
+
+
+def test_a_background_only_element_uses_the_inherited_text_colour(suggestions):
+    report = []
+    s = soup_of('<h2 style="background-color: black">x</h2>')
+    wc.fix_inline_styles(s, report)
+
+    colour = wc.cssutils.parseStyle(s.find("h2")["style"]).getPropertyValue("color")
+    assert colour and wc.check_contrast(colour, "black") >= 4.5
+
+
+def test_the_ancestor_background_walk_works(suggestions):
+    report = []
+    s = soup_of('<div style="background:black"><h2 style="color:#111">x</h2></div>')
+    wc.fix_inline_styles(s, report)
+
+    colour = wc.cssutils.parseStyle(s.find("h2")["style"]).getPropertyValue("color")
+    assert wc.check_contrast(colour, "black") >= 4.5
+    assert report, "the `background:` shorthand should have been understood"
+
+
+def test_a_passing_pair_is_left_alone(suggestions):
+    report = []
+    wc.fix_inline_styles(soup_of('<p style="color:#000; background:#fff">x</p>'), report)
+    assert report == []
+
+
+def test_an_element_with_no_colours_is_skipped(suggestions):
+    report = []
+    wc.fix_inline_styles(soup_of('<p style="padding:4px">x</p>'), report)
+    assert report == []
+
+
+# --- abstaining rather than assuming a white canvas -------------------------
+
+@pytest.mark.parametrize("head", [
+    "<style>body{background:#000}</style>",
+    '<link rel="stylesheet" href="t.css">',
+])
+def test_unreadable_css_means_abstain_not_guess(suggestions, head):
+    """Guessing white is what pushed text on a dark page darker."""
+    report = []
+    s = soup_of(f'<html><head>{head}</head>'
+                '<body><p style="color:#333">dim</p></body></html>')
+    wc.fix_inline_styles(s, report)
+
+    colour = wc.cssutils.parseStyle(s.find("p")["style"]).getPropertyValue("color")
+    assert colour.lower() in ("#333", "#333333"), "the element must not be recoloured"
+    assert abstentions(report), "and the skip must be reported, not silent"
+
+
+def test_with_no_stylesheet_the_canvas_is_still_assumed(suggestions):
+    report = []
+    wc.fix_inline_styles(
+        soup_of('<html><body><p style="color:#eee">pale</p></body></html>'), report)
+    assert fixes(report)
+
+
+@pytest.mark.parametrize("html,expected", [
+    ("<style>p{color:red}</style>", True),
+    ('<link rel="stylesheet" href="a.css">', True),
+    ('<link rel="icon" href="f.ico">', False),
+    ("<p>hi</p>", False),
+])
+def test_document_has_stylesheets(html, expected):
+    assert wc.document_has_stylesheets(soup_of(html)) is expected
+
+
+# --- an image or gradient backdrop is not a colour --------------------------
+
+@pytest.mark.parametrize("style", [
+    "color:#888; background:url(hero.png) #fff",
+    "color:#888; background:linear-gradient(#000,#fff)",
+    # A colour behind an image does not help: the image covers it.
+    "color:#888; background:url(hero.png) no-repeat #000",
+])
+def test_a_non_uniform_backdrop_abstains(suggestions, style):
+    report = []
+    s = soup_of(f'<p style="{style}">x</p>')
+    wc.fix_inline_styles(s, report)
+
+    assert abstentions(report)
+    assert "#888" in s.find("p")["style"], "the colour must be left as it was"
+
+
+def test_the_walk_stops_at_an_image_ancestor(suggestions):
+    """Rather than falling through to a parent's flat colour, or to white."""
+    report = []
+    wc.fix_inline_styles(
+        soup_of('<div style="background:url(h.png)"><p style="color:#eee">x</p></div>'),
+        report)
+    assert abstentions(report)
+
+
+def test_a_plain_background_colour_is_unaffected(suggestions):
+    report = []
+    wc.fix_inline_styles(soup_of('<p style="color:#333; background-color:#000">x</p>'),
+                         report)
+    assert fixes(report)
+
+
+def test_a_stylesheet_rule_over_an_image_abstains(suggestions):
+    report = []
+    s = soup_of("<style>.hero{background:url('img/x.png') no-repeat;color:#888}</style>")
+    wc.fix_style_blocks(s, "https://example.com/page.html", report)
+
+    assert abstentions(report)
+    assert "https://example.com/img/x.png" in s.find("style").string, \
+        "the url should still be absolutised"
+
+
+# --- legacy presentational attributes ---------------------------------------
+
+def test_body_text_is_fixed_against_bgcolor(suggestions):
+    report = []
+    s = soup_of('<body bgcolor="#000000" text="#0000ff"><p>hi</p></body>')
+    wc.fix_presentational_attributes(s, report)
+
+    body = s.find("body")
+    assert wc.check_contrast(body["text"], "#000000") >= 4.5
+    assert body["bgcolor"] == "#000000", "the background must not be touched"
+    assert body.get("style") is None, \
+        "converting to inline style would promote it above the stylesheet"
+
+
+def test_font_color_is_fixed_against_an_ancestor_bgcolor(suggestions):
+    report = []
+    s = soup_of('<body bgcolor="black"><font color="#222">dim</font></body>')
+    wc.fix_presentational_attributes(s, report)
+    assert wc.check_contrast(s.find("font")["color"], "black") >= 4.5
+
+
+def test_a_passing_attribute_pair_is_left_alone(suggestions):
+    report = []
+    wc.fix_presentational_attributes(soup_of('<body bgcolor="white" text="black">'),
+                                     report)
+    assert report == []
+
+
+# --- <style> blocks ---------------------------------------------------------
+
+def test_a_style_block_is_fixed_and_its_urls_absolutised(suggestions):
+    report = []
+    css = ("#ab{background-color:aqua;color:cadetblue}\n"
+           ".hero{background:url('img/x.png') no-repeat}")
+    s = soup_of(f"<style>{css}</style>")
+    wc.fix_style_blocks(s, "https://example.com/assets/page.html", report)
+
+    out = s.find("style").string
+    assert "cadetblue" not in out
+    assert any(e["target"] == "#ab" for e in fixes(report))
+    assert any(2.3 < (e["ratio_before"] or 0) < 2.5 for e in fixes(report))
+    assert all((e["ratio_after"] or 0) >= 4.5 for e in fixes(report))
+    assert "https://example.com/assets/img/x.png" in out
+    assert "&gt;" not in out, "selectors must not be HTML-escaped"
+
+
+# --- linked stylesheets -----------------------------------------------------
+
+def test_linked_stylesheets(suggestions, sheets):
+    sheets.files = {
+        "bad.css": "#ab{background-color:aqua;color:cadetblue}"
+                   ".h{background:url('img/hero.png')}",
+        "good.css": "p{color:#000;background-color:#fff}",
+    }
+    report = []
+    s = soup_of('<link rel="stylesheet" href="css/bad.css">'
+                '<link rel="stylesheet" href="css/good.css">'
+                '<link rel="stylesheet" href="css/missing.css">'
+                '<link rel="icon" href="favicon.ico">')
+    wc.fix_linked_stylesheets(s, "https://example.com/page.html", report)
+
+    assert "https://example.com/css/bad.css" in sheets.fetched, \
+        "each sheet is fetched from its own URL"
+    assert not any("favicon" in u for u in sheets.fetched)
+
+    inlined = s.find("style").string
+    assert "cadetblue" not in inlined
+    assert "https://example.com/css/img/hero.png" in inlined, \
+        "url() resolves against the SHEET, not the page"
+
+    remaining = [link.get("href", "") for link in s.find_all("link")]
+    assert any(h.endswith("good.css") for h in remaining), \
+        "an unmodified sheet stays a <link> rather than being inlined"
+    assert any(h.endswith("missing.css") for h in remaining), \
+        "an unreachable sheet leaves its <link> intact"
+    assert "favicon.ico" in remaining
+
+
+# --- end to end -------------------------------------------------------------
+
+def test_change_color_on_the_demo_page(suggestions, sheets):
+    sheets.files = {".css": "#ab{background-color:aqua;color:cadetblue}"}
+    demo = """<html><head>
+    <link rel="stylesheet" href="demostyles.css">
+    </head><body>
+    <div><h2 style="background-color: #000; color: #00f;">line-1</h2></div>
+    <div><h2 style="background-color: black;">line-2</h2></div>
+    <div><h2 id="ab">line-3</h2></div>
+    <div><h2 id="abc">line-4</h2></div>
+    </body></html>"""
+
+    issues = wc.ChangeColor("http://localhost:8000/x.html", soup_of(demo))
+    sources = {e["source"] for e in issues}
+
+    assert len(issues) >= 3, "the report used to always come back empty"
+    assert "inline" in sources
+    assert "stylesheet" in sources
+    assert all(e["ratio_after"] >= 4.5 for e in fixes(issues))
+    assert all(e["ratio_after"] > e["ratio_before"] for e in fixes(issues))
+    assert any(e["target"] == "#ab" for e in fixes(issues)), \
+        "a stylesheet-only failure is the case the old code could never see"
+
+
+def test_the_four_source_fixture(suggestions, sheets):
+    """tests/fixtures/demo_all_sources.html exercises all four colour sources."""
+    with open(os.path.join(FIXTURES, "demo_theme.css"), encoding="utf-8") as fh:
+        sheets.files = {"demo_theme.css": fh.read()}
+    with open(os.path.join(FIXTURES, "demo_all_sources.html"), encoding="utf-8") as fh:
+        fixture = soup_of(fh.read())
+
+    url = "http://example.com/tests/fixtures/demo_all_sources.html"
+    issues = wc.ChangeColor(url, fixture)
+    by_source = {e["source"] for e in issues}
+
+    for source in ("inline", "attribute", "style-block", "stylesheet"):
+        assert source in by_source, f"{source} was not exercised"
+
+    assert all(e["ratio_after"] >= 4.5 for e in fixes(issues))
+    assert all(e["ratio_after"] > e["ratio_before"] for e in fixes(issues))
+    assert "padding" in fixture.find("h2")["style"]
+    assert fixture.find("body")["bgcolor"] == "#000000"
+    assert fixture.find("body").get("style") is None
+    assert fixture.find("link", rel="stylesheet") is None, "the sheet should be inlined"
+    assert "http://example.com/tests/fixtures/img/hero.png" in str(fixture), \
+        "url() must be absolutised against the sheet"

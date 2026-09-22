@@ -1,37 +1,30 @@
 """Tests for the guarded fetch helper.
 
-No network: the address checks are exercised against literal IPs and a stubbed
-resolver, and the redirect walk against a stubbed requests.get. Run with:
-
-    python tests/test_nethttp.py
+No network: the address checks run against a stubbed resolver and the
+redirect walk against a stubbed requests.get.
 """
 
-import os
-import sys
+import types
 
-# Tests live in tests/ but import the package from the project root, so put the
-# root on sys.path before anything else. Works no matter where you run from.
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+import pytest
 
-from src import nethttp                                          # noqa: E402
-from src.nethttp import BlockedURL                               # noqa: E402
-
-PASSED, FAILED = 0, 0
+from src import nethttp
+from src.nethttp import BlockedURL
 
 
-def check(name, condition, detail=""):
-    global PASSED, FAILED
-    if condition:
-        PASSED += 1
-        print(f"  PASS  {name}")
-    else:
-        FAILED += 1
-        print(f"  FAIL  {name}   {detail}")
+@pytest.fixture
+def resolver(monkeypatch):
+    """Point hostnames at chosen addresses. Anything unlisted is public."""
+    mapping = {}
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(2, 1, 6, "", (mapping.get(host, "93.184.216.34"), 0))]
+
+    monkeypatch.setattr(nethttp.socket, "getaddrinfo", fake_getaddrinfo)
+    return mapping
 
 
 def blocked(url):
-    """True if assert_fetchable refuses `url`."""
     try:
         nethttp.assert_fetchable(url)
         return False
@@ -39,100 +32,92 @@ def blocked(url):
         return True
 
 
-# Resolve every hostname to a public address unless a test says otherwise, so
-# the scheme and redirect tests do not depend on DNS.
-_resolve_map = {}
+# --- schemes ----------------------------------------------------------------
+
+@pytest.mark.parametrize("url", ["http://example.com/", "https://example.com/"])
+def test_http_schemes_allowed(resolver, url):
+    assert not blocked(url)
 
 
-def fake_getaddrinfo(host, port):
-    addr = _resolve_map.get(host, "93.184.216.34")      # example.com
-    return [(2, 1, 6, "", (addr, 0))]
+@pytest.mark.parametrize("url", [
+    "file:///etc/passwd",
+    "gopher://example.com/",
+    "ftp://example.com/",
+    "data:text/html,hi",
+    "example.com/page",          # no scheme
+    "http:///nohost",            # no host
+    "",
+    None,
+])
+def test_other_schemes_refused(resolver, url):
+    assert blocked(url)
 
 
-nethttp.socket.getaddrinfo = fake_getaddrinfo
+# --- address ranges: the actual SSRF targets --------------------------------
+
+@pytest.mark.parametrize("host,address", [
+    ("localhost", "127.0.0.1"),
+    ("127.0.0.1", "127.0.0.1"),
+    ("metadata.internal", "169.254.169.254"),     # cloud credentials
+    ("internal.corp", "10.0.0.1"),
+    ("internal2.corp", "172.16.5.4"),
+    ("router.lan", "192.168.1.1"),
+    ("nowhere", "0.0.0.0"),
+    ("localhost6", "::1"),
+])
+def test_private_addresses_refused(resolver, host, address):
+    resolver[host] = address
+    assert blocked(f"http://{host}/")
 
 
-# ---------------------------------------------------------------------------
-print("\n[1] schemes")
-
-check("http allowed", not blocked("http://example.com/"))
-check("https allowed", not blocked("https://example.com/"))
-check("file: refused", blocked("file:///etc/passwd"))
-check("gopher: refused", blocked("gopher://example.com/"))
-check("ftp: refused", blocked("ftp://example.com/"))
-check("data: refused", blocked("data:text/html,hi"))
-check("scheme-less refused", blocked("example.com/page"))
-check("empty refused", blocked(""))
-check("None refused", blocked(None))
-check("no host refused", blocked("http:///nohost"))
-
-print("\n[2] address ranges -- the SSRF targets")
-
-for label, host, addr in [
-    ("loopback by name", "localhost", "127.0.0.1"),
-    ("loopback by literal", "127.0.0.1", "127.0.0.1"),
-    ("cloud metadata", "metadata.internal", "169.254.169.254"),
-    ("private 10/8", "internal.corp", "10.0.0.1"),
-    ("private 172.16/12", "internal.corp", "172.16.5.4"),
-    ("private 192.168/16", "router.lan", "192.168.1.1"),
-    ("unspecified", "nowhere", "0.0.0.0"),
-    ("ipv6 loopback", "localhost6", "::1"),
-]:
-    _resolve_map[host] = addr
-    check(f"{label} refused", blocked(f"http://{host}/"), addr)
-
-_resolve_map["example.com"] = "93.184.216.34"
-check("a public address is allowed", not blocked("http://example.com/"))
-
-print("\n[3] every resolved address is checked, not just the first")
+def test_public_address_allowed(resolver):
+    resolver["example.com"] = "93.184.216.34"
+    assert not blocked("http://example.com/")
 
 
-def multi_homed(host, port):
-    return [(2, 1, 6, "", ("93.184.216.34", 0)),
-            (2, 1, 6, "", ("127.0.0.1", 0))]
+def test_every_resolved_address_is_checked(monkeypatch):
+    """A name with a public record AND a loopback one must still be refused."""
+    monkeypatch.setattr(nethttp.socket, "getaddrinfo", lambda *a, **k: [
+        (2, 1, 6, "", ("93.184.216.34", 0)),
+        (2, 1, 6, "", ("127.0.0.1", 0)),
+    ])
+    assert blocked("http://sneaky.example/")
 
 
-_real_getaddrinfo = nethttp.socket.getaddrinfo
-nethttp.socket.getaddrinfo = multi_homed
-check("public first, loopback second is still refused",
-      blocked("http://sneaky.example/"))
-nethttp.socket.getaddrinfo = _real_getaddrinfo
+def test_unresolvable_host_refused(monkeypatch):
+    def boom(*args, **kwargs):
+        raise nethttp.socket.gaierror("no such host")
 
-print("\n[4] unresolvable hosts")
-
-
-def failing_resolver(host, port):
-    raise nethttp.socket.gaierror("no such host")
+    monkeypatch.setattr(nethttp.socket, "getaddrinfo", boom)
+    assert blocked("http://does-not-exist.invalid/")
 
 
-nethttp.socket.getaddrinfo = failing_resolver
-check("a host that will not resolve is refused",
-      blocked("http://does-not-exist.invalid/"))
-nethttp.socket.getaddrinfo = _real_getaddrinfo
+# --- the local-development escape hatch -------------------------------------
+
+def test_opt_in_allows_private_hosts(resolver, monkeypatch):
+    resolver["localhost"] = "127.0.0.1"
+    monkeypatch.setenv(nethttp.ALLOW_PRIVATE_ENV, "1")
+    assert not blocked("http://localhost:8791/x")
+    # Still not a free pass on the scheme.
+    assert blocked("file:///etc/passwd")
 
 
-print("\n[5] the local-development escape hatch")
-
-_resolve_map["localhost"] = "127.0.0.1"
-os.environ[nethttp.ALLOW_PRIVATE_ENV] = "1"
-check("opting in allows a private host", not blocked("http://localhost:8791/x"))
-check("...and it is still not a free pass on the scheme",
-      blocked("file:///etc/passwd"))
-os.environ.pop(nethttp.ALLOW_PRIVATE_ENV)
-check("without it, the same host is refused again",
-      blocked("http://localhost:8791/x"))
+def test_without_opt_in_private_hosts_refused(resolver, monkeypatch):
+    resolver["localhost"] = "127.0.0.1"
+    monkeypatch.delenv(nethttp.ALLOW_PRIVATE_ENV, raising=False)
+    assert blocked("http://localhost:8791/x")
 
 
-print("\n[6] redirects are re-checked at every hop")
-
+# --- redirects --------------------------------------------------------------
 
 class FakeResponse:
-    def __init__(self, body=b"ok", status=200, location=None, url="http://example.com/"):
+    def __init__(self, body=b"ok", status=200, location=None,
+                 url="http://example.com/"):
         self.status_code = status
         self.headers = {"location": location} if location else {}
         self.url = url
         self._body = body
-        self._content = None        # nethttp.get fills this in, as on a real response
+        self._content = None        # nethttp.get fills this in
         self.closed = False
 
     @property
@@ -151,73 +136,73 @@ class FakeResponse:
         self.closed = True
 
 
-_requested = []
-_chain = {}
+@pytest.fixture
+def http(monkeypatch, resolver):
+    """Serve canned responses and record what was requested."""
+    chain, requested = {}, []
+
+    def fake_get(url, **kwargs):
+        requested.append((url, kwargs))
+        return chain.get(url, FakeResponse(url=url))
+
+    monkeypatch.setattr(nethttp.requests, "get", fake_get)
+    monkeypatch.delenv(nethttp.ALLOW_PRIVATE_ENV, raising=False)
+    return types.SimpleNamespace(chain=chain, requested=requested,
+                                 resolver=resolver)
 
 
-def fake_get(url, **kwargs):
-    _requested.append((url, kwargs))
-    return _chain.get(url, FakeResponse(url=url))
+def test_redirect_into_loopback_is_refused(http):
+    http.resolver["localhost"] = "127.0.0.1"
+    http.chain.update({
+        "http://example.com/start": FakeResponse(
+            status=302, location="http://evil.example/step2",
+            url="http://example.com/start"),
+        "http://evil.example/step2": FakeResponse(
+            status=302, location="http://localhost/admin",
+            url="http://evil.example/step2"),
+    })
+
+    with pytest.raises(BlockedURL):
+        nethttp.get("http://example.com/start")
+
+    assert not any("localhost" in url for url, _ in http.requested), \
+        "the loopback host should never have been requested"
 
 
-nethttp.requests.get = fake_get
+def test_relative_location_resolved_against_current_url(http):
+    http.chain["http://example.com/start"] = FakeResponse(
+        status=302, location="/landed", url="http://example.com/start")
 
-_requested.clear()
-_chain = {
-    "http://example.com/start": FakeResponse(
-        status=302, location="http://evil.example/step2", url="http://example.com/start"),
-    "http://evil.example/step2": FakeResponse(
-        status=302, location="http://localhost/admin", url="http://evil.example/step2"),
-}
-_resolve_map["evil.example"] = "93.184.216.34"
-_resolve_map["localhost"] = "127.0.0.1"
+    result = nethttp.get("http://example.com/start")
 
-try:
-    nethttp.get("http://example.com/start")
-    _refused = False
-except BlockedURL:
-    _refused = True
-check("a redirect into loopback is refused", _refused)
-check("...and the loopback host was never requested",
-      not any("localhost" in u for u, _ in _requested), _requested)
+    assert http.requested[-1][0] == "http://example.com/landed"
+    assert result.content == b"ok"
 
-_requested.clear()
-_chain = {
-    "http://example.com/start": FakeResponse(
-        status=302, location="/landed", url="http://example.com/start"),
-}
-result = nethttp.get("http://example.com/start")
-check("a relative Location is resolved against the current URL",
-      _requested[-1][0] == "http://example.com/landed", _requested)
-check("the final body is returned", result.content == b"ok", result.content)
 
-print("\n[7] timeout and size cap")
+# --- timeout and size cap ---------------------------------------------------
 
-_requested.clear()
-_chain = {}
-nethttp.get("http://example.com/")
-check("a timeout is always passed to requests",
-      _requested[0][1].get("timeout") == nethttp.DEFAULT_TIMEOUT,
-      _requested[0][1])
-check("redirects are not followed by requests itself",
-      _requested[0][1].get("allow_redirects") is False, _requested[0][1])
+def test_a_timeout_is_always_passed(http):
+    nethttp.get("http://example.com/")
+    assert http.requested[0][1].get("timeout") == nethttp.DEFAULT_TIMEOUT
 
-_chain = {"http://example.com/big": FakeResponse(body=b"x" * 5000,
-                                                 url="http://example.com/big")}
-try:
-    nethttp.get("http://example.com/big", max_bytes=1000)
-    _capped = False
-except BlockedURL:
-    _capped = True
-check("an oversized body is refused", _capped)
-check("...and the connection is closed", _chain["http://example.com/big"].closed)
 
-_chain = {"http://example.com/ok": FakeResponse(body=b"x" * 500,
-                                                url="http://example.com/ok")}
-check("a body under the cap comes back whole",
-      nethttp.get("http://example.com/ok", max_bytes=1000).content == b"x" * 500)
+def test_requests_does_not_follow_redirects_itself(http):
+    nethttp.get("http://example.com/")
+    assert http.requested[0][1].get("allow_redirects") is False
 
-print("\n" + "=" * 62)
-print(f"  {PASSED} passed, {FAILED} failed")
-print("=" * 62)
-sys.exit(1 if FAILED else 0)
+
+def test_oversized_body_is_refused_and_closed(http):
+    response = FakeResponse(body=b"x" * 5000, url="http://example.com/big")
+    http.chain["http://example.com/big"] = response
+
+    with pytest.raises(BlockedURL):
+        nethttp.get("http://example.com/big", max_bytes=1000)
+
+    assert response.closed
+
+
+def test_body_under_the_cap_comes_back_whole(http):
+    http.chain["http://example.com/ok"] = FakeResponse(
+        body=b"x" * 500, url="http://example.com/ok")
+
+    assert nethttp.get("http://example.com/ok", max_bytes=1000).content == b"x" * 500

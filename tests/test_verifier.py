@@ -1,57 +1,21 @@
 """Tests for the remediation verifier.
 
-Runs a real headless browser but stubs Gemini, so it is deterministic and
-free. Includes deliberate-break cases -- a verifier that never fails isn't a
-verifier.
-
-    python test_verifier.py
+Runs a real headless browser but never reaches a model, so it is
+deterministic and free. The deliberate-break section matters most: a
+verifier that cannot fail is not verifying anything.
 """
 
-import subprocess
-import time
-import types
-
 import os
-import sys
+import shutil
+import time
 
-# Tests live in tests/ but import the package from the project root, so put the
-# root on sys.path before anything else. Works no matter where you run from.
+import pytest
+from bs4 import BeautifulSoup
+
+from src import a11y, runstore, verifier, webScraper
+from src.webScraper import Scraper, stamp_ids, strip_ids
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-
-
-_stub = types.ModuleType("gemini")
-_stub.suggest_text_color = lambda fg, bg: None      # force the deterministic path
-_stub.getAlt = lambda src: "a stubbed description"
-_stub.getLabel = lambda inp, label="": "Stub Label"
-sys.modules["src.gemini"] = _stub
-sys.modules["gemini"] = _stub
-
-from bs4 import BeautifulSoup                                      # noqa: E402
-from src import a11y, nethttp, runstore, verifier, webScraper     # noqa: E402
-from src.webScraper import Scraper, stamp_ids, strip_ids           # noqa: E402
-
-PORT = 8791
-# Served from the project root, not tests/fixtures/: the fixture's images live
-# at ../../DemoImages, so serving the fixture dir would 404 them -- and a broken image
-# renders at 16px without alt text but expands to fit it once alt is added,
-# which is a real (but fixture-induced) layout change.
-BASE = f"http://localhost:{PORT}/tests/fixtures"
-
-# The fixture server is on localhost, which is exactly what nethttp refuses.
-# Opt in for the duration of the suite.
-os.environ[nethttp.ALLOW_PRIVATE_ENV] = "1"
-PASSED, FAILED = 0, 0
-
-
-def check(name, condition, detail=""):
-    global PASSED, FAILED
-    if condition:
-        PASSED += 1
-        print(f"  PASS  {name}")
-    else:
-        FAILED += 1
-        print(f"  FAIL  {name}   {detail}")
 
 
 def stamped(html):
@@ -60,165 +24,180 @@ def stamped(html):
     return soup
 
 
-def verify(before_soup, after_soup, modified_ids=()):
-    return verifier.run_checks(
-        f"{BASE}/experiment.html", str(before_soup), str(after_soup), modified_ids
-    )
-
-
 def named(report, name):
-    return next(c for c in report.checks if c.name == name)
+    return next(check for check in report.checks if check.name == name)
 
 
-# ---------------------------------------------------------------------------
-print("\n[1] run store")
+@pytest.fixture
+def verify(fixture_server, allow_private):
+    """Run the checks against two documents, using the fixture page's URL."""
+    def _verify(before_soup, after_soup, modified_ids=()):
+        return verifier.run_checks(
+            f"{fixture_server}/experiment.html",
+            str(before_soup), str(after_soup), modified_ids,
+        )
+    return _verify
 
-rid = runstore.new_run_id()
-runstore.save_run(rid, "<p>before</p>", "<p>after</p>",
-                  {"url": "http://x/", "modified_ids": ["3", "7"]})
-loaded = runstore.load_run(rid)
-check("round-trips a run", loaded is not None and loaded[0] == "<p>before</p>")
-check("meta survives", loaded[2]["modified_ids"] == ["3", "7"], loaded[2])
-check("unknown id returns None", runstore.load_run("deadbeef") is None)
-check("empty id returns None", runstore.load_run("") is None)
-check("path traversal refused on load", runstore.load_run("../../etc") is None)
-try:
-    runstore.save_run("../evil", "a", "b", {})
-    _refused = False
-except ValueError:
-    _refused = True
-check("path traversal refused on save", _refused)
 
-print("\n[1b] the run store stays bounded")
+@pytest.fixture(scope="session")
+def demo_scrape(fixture_server):
+    """Scrape the demo fixture once; several tests read the same result."""
+    os.environ[webScraper.nethttp.ALLOW_PRIVATE_ENV] = "1"
+    result = Scraper().scrape_url(f"{fixture_server}/experiment.html")
+    report = verifier.run_checks(
+        result.url, result.html_before, str(result.soup), result.modified_ids)
+    return result, report
 
-import shutil as _shutil                                          # noqa: E402
 
-_tmp_runs = os.path.join(ROOT, "runs", "_sweep_test")
-_real_runs_dir = runstore.RUNS_DIR
-_shutil.rmtree(_tmp_runs, ignore_errors=True)
-os.makedirs(_tmp_runs, exist_ok=True)
-runstore.RUNS_DIR = _tmp_runs
-try:
+# --- the run store ----------------------------------------------------------
+
+def test_a_run_round_trips():
+    run_id = runstore.new_run_id()
+    runstore.save_run(run_id, "<p>before</p>", "<p>after</p>",
+                      {"url": "http://x/", "modified_ids": ["3", "7"]})
+
+    before, _after, meta = runstore.load_run(run_id)
+    assert before == "<p>before</p>"
+    assert meta["modified_ids"] == ["3", "7"]
+
+
+@pytest.mark.parametrize("run_id", ["deadbeef", "", "../../etc"])
+def test_an_unusable_run_id_returns_none(run_id):
+    assert runstore.load_run(run_id) is None
+
+
+def test_path_traversal_is_refused_on_save():
+    with pytest.raises(ValueError):
+        runstore.save_run("../evil", "a", "b", {})
+
+
+def test_the_run_store_stays_bounded(monkeypatch, tmp_path):
+    monkeypatch.setattr(runstore, "RUNS_DIR", str(tmp_path))
     ids = []
     for n in range(4):
-        r = runstore.new_run_id()
-        runstore.save_run(r, "x" * 40_000, "y" * 40_000, {"url": f"http://x/{n}"})
-        os.utime(os.path.join(_tmp_runs, r), (time.time() - n, time.time() - n))
-        ids.append(r)
+        run_id = runstore.new_run_id()
+        runstore.save_run(run_id, "x" * 40_000, "y" * 40_000, {"url": f"http://x/{n}"})
+        stamp = time.time() - n
+        os.utime(tmp_path / run_id, (stamp, stamp))
+        ids.append(run_id)
 
-    check("all four survive under a generous cap",
-          sum(1 for r in ids if runstore.load_run(r)) == 4)
+    assert sum(1 for i in ids if runstore.load_run(i)) == 4
 
-    runstore.sweep(max_total=200_000)       # room for about two runs
-    kept = [r for r in ids if runstore.load_run(r)]
-    check("a size cap evicts down to the limit", len(kept) < 4, len(kept))
-    check("...and it is the newest that survive",
-          set(kept) <= {ids[0], ids[1]}, kept)
+    runstore.sweep(max_total=200_000)            # room for about two runs
+    kept = [i for i in ids if runstore.load_run(i)]
+    assert len(kept) < 4
+    assert set(kept) <= {ids[0], ids[1]}, "the newest should survive"
 
     runstore.sweep(max_age=0)
-    check("the age rule still clears everything",
-          not any(runstore.load_run(r) for r in ids))
-finally:
-    runstore.RUNS_DIR = _real_runs_dir
-    _shutil.rmtree(_tmp_runs, ignore_errors=True)
+    assert not any(runstore.load_run(i) for i in ids)
 
-print("\n[2] identity stamping")
 
-soup = stamped("<html><body><div><p>hi</p></div></body></html>")
-ids = [el.get("data-aai-id") for el in soup.find_all(True)]
-check("every element stamped", all(i is not None for i in ids), ids)
-check("ids are unique", len(set(ids)) == len(ids))
-strip_ids(soup)
-check("strip_ids removes them",
-      all(el.get("data-aai-id") is None for el in soup.find_all(True)))
+# --- identity stamping ------------------------------------------------------
 
-print("\n[3] helpers")
+def test_every_element_is_stamped_uniquely():
+    soup = stamped("<html><body><div><p>hi</p></div></body></html>")
+    ids = [el.get("data-aai-id") for el in soup.find_all(True)]
+
+    assert all(i is not None for i in ids)
+    assert len(set(ids)) == len(ids)
+
+    strip_ids(soup)
+    assert all(el.get("data-aai-id") is None for el in soup.find_all(True))
+
+
+# --- snapshot helpers -------------------------------------------------------
 
 S = verifier.ElementSnapshot
-snaps = [
-    S("1", None, False, "DIV", 0, 0, 10, 10, "rgb(0,0,0)", "rgb(255,255,255)", 16, 400, True, False),
-    S("2", "1", False, "P", 0, 0, 10, 10, "rgb(0,0,0)", "rgb(255,255,255)", 16, 400, True, True),
-    S(None, "2", True, "LABEL", 0, 0, 5, 5, "rgb(0,0,0)", "rgb(255,255,255)", 16, 400, True, True),
+SNAPS = [
+    S("1", None, False, "DIV", 0, 0, 10, 10, "rgb(0,0,0)", "rgb(255,255,255)",
+      16, 400, True, False),
+    S("2", "1", False, "P", 0, 0, 10, 10, "rgb(0,0,0)", "rgb(255,255,255)",
+      16, 400, True, True),
+    S(None, "2", True, "LABEL", 0, 0, 5, 5, "rgb(0,0,0)", "rgb(255,255,255)",
+      16, 400, True, True),
 ]
-check("insertion ancestors walk up the whole chain",
-      verifier._insertion_ancestors(snaps) == {"1", "2"},
-      verifier._insertion_ancestors(snaps))
-check("descendants of a modified id are excluded",
-      verifier._with_descendants({"1"}, snaps) == {"1", "2"},
-      verifier._with_descendants({"1"}, snaps))
-
-big = S("9", None, False, "H1", 0, 0, 9, 9, "", "", 30, 400, True, True)
-bold = S("9", None, False, "H1", 0, 0, 9, 9, "", "", 19, 700, True, True)
-small = S("9", None, False, "P", 0, 0, 9, 9, "", "", 16, 400, True, True)
-check("large text uses the 3:1 threshold", verifier._threshold_for(big) == 3.0)
-check("bold 19px uses 3:1", verifier._threshold_for(bold) == 3.0)
-check("normal text uses 4.5:1", verifier._threshold_for(small) == 4.5)
-
-print("\n[3b] labelling: one definition for the scraper and the verifier")
 
 
-def labelled_soup(html):
+def test_insertion_ancestors_walk_the_whole_chain():
+    assert verifier._insertion_ancestors(SNAPS) == {"1", "2"}
+
+
+def test_descendants_of_a_modified_element_are_excluded():
+    """Colour inherits, so a recoloured parent changes its children too."""
+    assert verifier._with_descendants({"1"}, SNAPS) == {"1", "2"}
+
+
+@pytest.mark.parametrize("size,weight,expected", [
+    (30, 400, 3.0),        # large text
+    (19, 700, 3.0),        # bold and nearly large
+    (16, 400, 4.5),        # normal
+])
+def test_the_wcag_threshold_depends_on_the_text_size(size, weight, expected):
+    snap = S("9", None, False, "P", 0, 0, 9, 9, "", "", size, weight, True, True)
+    assert verifier._threshold_for(snap) == expected
+
+
+# --- labelling: one definition for the scraper and the verifier -------------
+
+@pytest.mark.parametrize("html,expected", [
+    ("<label>Email <input></label>", None),          # already named by its wrapper
+    ('<input type="hidden" name="csrf">', None),
+    ('<input type="submit" value="Go">', None),
+    ('<input type="reset">', None),
+    ('<input id="e">', "for"),
+    ('<input placeholder="Email">', "aria"),
+    ('<input aria-label="Email">', None),
+    ('<input type="box">', "aria"),                  # unknown type renders as text
+])
+def test_labelling_strategy(html, expected):
     soup = BeautifulSoup(html, "html.parser")
-    stamp_ids(soup)
+    assert a11y.labelling_strategy(soup, soup.find("input")) == expected
+
+
+def scraper_for(html):
+    soup = stamped(html)
     scraper = Scraper()
     scraper.soup = soup
     scraper.url = "http://example.com/"
     return soup, scraper
 
 
-def strategy_for(html):
-    soup = BeautifulSoup(html, "html.parser")
-    return a11y.labelling_strategy(soup, soup.find("input"))
+def test_an_input_with_no_id_gets_an_aria_label():
+    soup, scraper = scraper_for('<form><input name="email" placeholder="Email"></form>')
+    issues = scraper.get_label()
+
+    assert soup.find("input").get("aria-label") == "Stub Label"
+    assert soup.find("label") is None and soup.find("br") is None, \
+        "an attribute inserts no node, so nothing can move"
+    assert any(i["source"] == "aria-label" for i in issues)
 
 
-for label, html, expected in [
-    ("a wrapped input is already named", "<label>Email <input></label>", None),
-    ("a hidden input is never labelled", '<input type="hidden" name="csrf">', None),
-    ("a submit button is never labelled", '<input type="submit" value="Go">', None),
-    ("a reset button is never labelled", '<input type="reset">', None),
-    ("an input with an id uses <label for>", '<input id="e">', "for"),
-    ("an input without one uses aria-label", '<input placeholder="Email">', "aria"),
-    ("an existing aria-label is left alone", '<input aria-label="Email">', None),
-    ("an unknown type still counts as text", '<input type="box">', "aria"),
-]:
-    got = strategy_for(html)
-    check(label, got == expected, f"got {got!r}, wanted {expected!r}")
+def test_a_wrapped_input_is_not_given_a_second_label():
+    soup, scraper = scraper_for('<label>Email <input name="e"></label>')
+    issues = scraper.get_label()
 
-soup, scraper = labelled_soup(
-    '<form><input name="email" placeholder="Email"></form>')
-issues = scraper.get_label()
-inp = soup.find("input")
-check("an input with no id now gets a name", inp.get("aria-label") == "Stub Label",
-      inp.attrs)
-check("...with no node inserted, so nothing can move",
-      soup.find("label") is None and soup.find("br") is None, str(soup))
-check("...and it is reported", any(i["source"] == "aria-label" for i in issues), issues)
+    assert len(soup.find_all("label")) == 1
+    assert issues == []
 
-soup, scraper = labelled_soup('<label>Email <input name="e"></label>')
-before = str(soup)
-issues = scraper.get_label()
-check("a wrapped input is not given a second label",
-      len(soup.find_all("label")) == 1, str(soup))
-check("...and nothing is reported for it", issues == [], issues)
 
-soup, scraper = labelled_soup(
-    '<form><input type="hidden" name="csrf" value="x">'
-    '<input type="submit" value="Go"></form>')
-issues = scraper.get_label()
-check("hidden and submit inputs are skipped",
-      issues == [] and soup.find("label") is None, issues)
+def test_hidden_and_submit_inputs_are_skipped():
+    soup, scraper = scraper_for(
+        '<form><input type="hidden" name="csrf" value="x">'
+        '<input type="submit" value="Go"></form>')
 
-soup, _ = labelled_soup(
-    '<form><input aria-label="Email"><input type="hidden"></form>')
-check("coverage counts aria-label and ignores hidden fields",
-      verifier._label_coverage(soup) == (1, 1), verifier._label_coverage(soup))
+    assert scraper.get_label() == []
+    assert soup.find("label") is None
 
-soup, _ = labelled_soup("<label>Email <input></label>")
-check("coverage counts a wrapping label",
-      verifier._label_coverage(soup) == (1, 1), verifier._label_coverage(soup))
 
-print("\n[3c] url absolutisation")
+@pytest.mark.parametrize("html", [
+    '<form><input aria-label="Email"><input type="hidden"></form>',
+    "<label>Email <input></label>",
+])
+def test_coverage_counts_the_same_things_the_scraper_fixes(html):
+    assert verifier._label_coverage(stamped(html)) == (1, 1)
 
+
+# --- url absolutisation -----------------------------------------------------
 
 def absolutised(html, url="http://example.com/dir/page.html"):
     scraper = Scraper()
@@ -228,287 +207,251 @@ def absolutised(html, url="http://example.com/dir/page.html"):
     return scraper.soup
 
 
-s = absolutised('<form action="/submit"><input name="pw"></form>')
-check("a relative form action would have posted to this app",
-      s.find("form")["action"] == "http://example.com/submit",
-      s.find("form")["action"])
+def test_a_relative_form_action_would_have_posted_to_this_app():
+    soup = absolutised('<form action="/submit"><input name="pw"></form>')
+    assert soup.find("form")["action"] == "http://example.com/submit"
 
-s = absolutised('<img srcset="a.png 1x, sub/b.png 2x" src="a.png">')
-check("srcset candidates are rewritten",
-      s.find("img")["srcset"] ==
-      "http://example.com/dir/a.png 1x, http://example.com/dir/sub/b.png 2x",
-      s.find("img")["srcset"])
 
-s = absolutised('<div style="background:url(bg.png) #fff"></div>')
-check("url() in an inline style is rewritten",
-      "http://example.com/dir/bg.png" in s.find("div")["style"],
-      s.find("div")["style"])
+def test_srcset_candidates_are_rewritten():
+    soup = absolutised('<img srcset="a.png 1x, sub/b.png 2x" src="a.png">')
+    assert soup.find("img")["srcset"] == (
+        "http://example.com/dir/a.png 1x, http://example.com/dir/sub/b.png 2x")
 
-s = absolutised('<div style="background:url(data:image/gif;base64,R0lGOD)"></div>')
-check("a data: uri is left alone",
-      "data:image/gif;base64,R0lGOD" in s.find("div")["style"],
-      s.find("div")["style"])
 
-s = absolutised('<video poster="p.jpg" src="v.mp4"></video>'
-                '<object data="o.swf"></object><iframe src="f.html"></iframe>')
-check("poster, object data and iframe src are covered",
-      all("http://example.com/dir/" in s.find(t)[a]
-          for t, a in (("video", "poster"), ("video", "src"),
-                       ("object", "data"), ("iframe", "src"))),
-      str(s))
+def test_url_in_an_inline_style_is_rewritten():
+    soup = absolutised('<div style="background:url(bg.png) #fff"></div>')
+    assert "http://example.com/dir/bg.png" in soup.find("div")["style"]
 
-s = absolutised('<head><base href="/assets/"></head><body>'
-                '<img src="x.png"><a href="y.html">y</a></body>')
-check("<base href> is honoured, not ignored",
-      s.find("img")["src"] == "http://example.com/assets/x.png",
-      s.find("img")["src"])
-check("...for links too",
-      s.find("a")["href"] == "http://example.com/assets/y.html", s.find("a")["href"])
-check("...and the <base> is removed once everything is absolute",
-      s.find("base") is None, str(s))
 
-s = absolutised('<a href="https://other.example/x">abs</a>'
-                '<a href="#top">frag</a><a href="mailto:a@b.c">mail</a>')
-hrefs = [a["href"] for a in s.find_all("a")]
-check("absolute, fragment and mailto hrefs survive urljoin",
-      hrefs == ["https://other.example/x", "#top", "mailto:a@b.c"], hrefs)
+def test_a_data_uri_is_left_alone():
+    soup = absolutised('<div style="background:url(data:image/gif;base64,R0lGOD)"></div>')
+    assert "data:image/gif;base64,R0lGOD" in soup.find("div")["style"]
 
-print("\n[4] live capture on the demo fixture (real browser)")
 
-server = subprocess.Popen(
-    [sys.executable, "-m", "http.server", str(PORT)],
-    cwd=ROOT,          # serve the project root: the images are at ../../DemoImages
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-)
-time.sleep(2)
+def test_media_and_embed_urls_are_covered():
+    soup = absolutised('<video poster="p.jpg" src="v.mp4"></video>'
+                       '<object data="o.swf"></object><iframe src="f.html"></iframe>')
+    for tag, attr in (("video", "poster"), ("video", "src"),
+                      ("object", "data"), ("iframe", "src")):
+        assert "http://example.com/dir/" in soup.find(tag)[attr]
 
-try:
-    result = Scraper().scrape_url(f"{BASE}/experiment.html")
-    after_html = str(result.soup)
-    report = verifier.run_checks(
-        result.url, result.html_before, after_html, result.modified_ids
-    )
 
-    print("\n" + report.as_text() + "\n")
+def test_base_href_is_honoured_then_removed():
+    soup = absolutised('<head><base href="/assets/"></head><body>'
+                       '<img src="x.png"><a href="y.html">y</a></body>')
 
-    check("capture succeeded", report.error is None, report.error)
-    check("all seven checks ran", len(report.checks) == 7,
-          [c.name for c in report.checks])
+    assert soup.find("img")["src"] == "http://example.com/assets/x.png"
+    assert soup.find("a")["href"] == "http://example.com/assets/y.html"
+    assert soup.find("base") is None, \
+        "a surviving <base> would re-resolve what is now absolute"
 
-    cov = named(report, "Coverage")
-    check("coverage: alt 0/4 -> 4/4", "alt 0/4 -> 4/4" in cov.summary, cov.summary)
+
+def test_absolute_fragment_and_mailto_hrefs_survive():
+    soup = absolutised('<a href="https://other.example/x">a</a>'
+                       '<a href="#top">b</a><a href="mailto:a@b.c">c</a>')
+    assert [a["href"] for a in soup.find_all("a")] == [
+        "https://other.example/x", "#top", "mailto:a@b.c"]
+
+
+# --- non-HTML responses -----------------------------------------------------
+
+def test_a_stylesheet_url_is_not_parsed_as_a_page(fixture_server, allow_private):
+    with pytest.raises(webScraper.UnsupportedContent):
+        Scraper().scrape_url(f"{fixture_server}/demo_theme.css")
+
+
+def test_a_404_is_not_scraped_as_if_it_were_the_page(fixture_server, allow_private):
+    with pytest.raises(Exception):
+        Scraper().scrape_url(f"{fixture_server}/does-not-exist.html")
+
+
+# --- a failed getAlt leaves the image alone ---------------------------------
+
+def test_a_failed_get_alt_writes_nothing(fixture_server, allow_private, monkeypatch):
+    """A placeholder string would be read aloud for every image, and counted."""
+    monkeypatch.setattr(webScraper, "getAlt", lambda src: None)
+    result = Scraper().scrape_url(f"{fixture_server}/experiment.html")
+
+    assert [i.get("alt") for i in result.soup.find_all("img") if i.get("alt")] == []
+
+    coverage = verifier.check_coverage(
+        BeautifulSoup(result.html_before, "html.parser"),
+        BeautifulSoup(str(result.soup), "html.parser"))
+    assert "alt 0/4 -> 0/4" in coverage.summary
+    assert any(i.get("source") == "skipped" for i in result.issues)
+
+
+# --- the live capture -------------------------------------------------------
+
+def test_the_demo_fixture_verifies_clean(demo_scrape):
+    _result, report = demo_scrape
+    assert report.error is None
+    assert len(report.checks) == 7
+    assert report.verdict == "PASS", report.as_text()
+
+
+@pytest.mark.parametrize("name", [
+    "Layout", "Visibility", "Contrast", "Colour", "Coverage", "Remaining", "Pixels",
+])
+def test_every_check_passes_on_the_demo_fixture(demo_scrape, name):
+    _result, report = demo_scrape
+    assert named(report, name).passed, named(report, name).summary
+
+
+def test_coverage_improves_on_the_demo_fixture(demo_scrape):
     # inp1 and inp3 already carry non-empty labels; inp2's is whitespace-only.
-    # Coverage measures presence, not correctness -- "wrong labeled" on a Gmail
-    # field counts as covered. The plan's expected 1/4 was simply miscounted.
-    check("coverage: labels 2/4 -> 4/4", "labels 2/4 -> 4/4" in cov.summary, cov.summary)
-    check("coverage passes", cov.passed)
+    # Coverage measures presence, not correctness.
+    _result, report = demo_scrape
+    summary = named(report, "Coverage").summary
+    assert "alt 0/4 -> 4/4" in summary
+    assert "labels 2/4 -> 4/4" in summary
 
-    check("visibility passes (nothing lost)", named(report, "Visibility").passed,
-          named(report, "Visibility").summary)
-    check("layout passes (insertion ancestors exempt from height)",
-          named(report, "Layout").passed, named(report, "Layout").summary)
-    check("colour passes (no unintended changes)", named(report, "Colour").passed,
-          named(report, "Colour").summary)
-    check("contrast passes now that COLOR_FIX_PLAN landed",
-          named(report, "Contrast").passed, named(report, "Contrast").summary)
-    # line-2 declares a black background inline and takes its text colour from
-    # demostyles.css, which the inline pass cannot read -- so the fixer
-    # abstains. That belongs on the leftover list, not in the verdict.
-    rem = named(report, "Remaining")
-    check("what the fixer could not reach is listed, not failed",
-          rem.passed and rem.details, rem.summary)
-    check("...and it is advisory, so the verdict stays PASS",
-          rem.tier == "advisory" and report.verdict == "PASS", report.verdict)
-    check("pixels within tolerance", named(report, "Pixels").passed,
-          named(report, "Pixels").summary)
-    check("overall verdict is PASS", report.verdict == "PASS", report.verdict)
 
-    print("\n[4a] non-HTML responses are refused")
+def test_what_the_fixer_could_not_reach_is_listed_not_failed(demo_scrape):
+    """line-2 takes its colour from a stylesheet the inline pass cannot read."""
+    _result, report = demo_scrape
+    remaining = named(report, "Remaining")
+    assert remaining.passed and remaining.details
+    assert remaining.tier == "advisory"
 
-    try:
-        Scraper().scrape_url(f"{BASE}/demo_theme.css")
-        _refused_css = False
-    except webScraper.UnsupportedContent:
-        _refused_css = True
-    check("a stylesheet URL is not parsed as a page", _refused_css)
 
-    try:
-        Scraper().scrape_url(f"{BASE}/does-not-exist.html")
-        _refused_404 = False
-    except Exception:
-        _refused_404 = True
-    check("a 404 is not scraped as if it were the page", _refused_404)
+# --- deliberate breaks ------------------------------------------------------
 
-    check("an html fixture is still accepted",
-          Scraper().scrape_url(f"{BASE}/experiment.html").soup is not None)
+@pytest.fixture
+def base_html(demo_scrape):
+    result, _report = demo_scrape
+    return result.html_before
 
-    print("\n[4b] a failed getAlt leaves the image alone")
 
-    # webScraper does `from .gemini import getAlt`, so the name is bound in
-    # that module -- swapping it on the stub module would have no effect.
-    _real_getAlt = webScraper.getAlt
-    webScraper.getAlt = lambda src: None          # every call fails
-    try:
-        dud = Scraper().scrape_url(f"{BASE}/experiment.html")
-    finally:
-        webScraper.getAlt = _real_getAlt
-
-    alt_written = [i for i in dud.soup.find_all("img") if i.get("alt")]
-    check("no alt attribute is written when the call fails",
-          alt_written == [], [i.get("alt") for i in alt_written])
-    cov = verifier.check_coverage(
-        BeautifulSoup(dud.html_before, "html.parser"),
-        BeautifulSoup(str(dud.soup), "html.parser"))
-    check("coverage reports 0/4, not a placeholder 4/4",
-          "alt 0/4 -> 0/4" in cov.summary, cov.summary)
-    check("the skip is reported rather than silent",
-          any(i.get("source") == "skipped" for i in dud.issues),
-          [i.get("source") for i in dud.issues])
-
-    print("\n[5] deliberate breaks — a verifier that never fails isn't a verifier")
-
-    base_html = result.html_before
-
-    # B: hide an element
+def test_a_hidden_element_is_caught(verify, base_html):
     broken = stamped(base_html)
     broken.find("h1")["style"] = "display:none"
-    r = verify(stamped(base_html), broken)
-    check("B fails when an element is hidden", not named(r, "Visibility").passed,
-          named(r, "Visibility").summary)
-    check("...and the verdict is BROKEN", r.verdict == "BROKEN", r.verdict)
+    report = verify(stamped(base_html), broken)
 
-    # B: remove an element outright
+    assert not named(report, "Visibility").passed
+    assert report.verdict == "BROKEN"
+
+
+def test_a_removed_element_is_caught(verify, base_html):
     broken = stamped(base_html)
     broken.find("h1").decompose()
-    r = verify(stamped(base_html), broken)
-    check("B fails when an element is removed", not named(r, "Visibility").passed)
+    assert not named(verify(stamped(base_html), broken), "Visibility").passed
 
-    # A: change a width
+
+def test_a_changed_width_is_caught(verify, base_html):
     broken = stamped(base_html)
     broken.find("h1")["style"] = "width:80px;display:block"
-    r = verify(stamped(base_html), broken)
-    layout = named(r, "Layout")
-    check("A fails when a width changes", not layout.passed, layout.summary)
-    check("...and carries the failing ids as data, not as parsed prose",
-          layout.element_ids and all(i.isdigit() for i in layout.element_ids),
-          layout.element_ids)
-    check("...matching the ids named in the details",
-          layout.element_ids == {d.split("#")[1].split(" ")[0]
-                                 for d in layout.details if "#" in d},
-          (layout.element_ids, layout.details))
+    layout = named(verify(stamped(base_html), broken), "Layout")
 
-    # A: both dimensions at once must report both, not just the first
+    assert not layout.passed
+    assert layout.element_ids, "the ids must be carried as data"
+    assert layout.element_ids == {d.split("#")[1].split(" ")[0]
+                                  for d in layout.details if "#" in d}
+
+
+def test_both_dimensions_are_reported(verify, base_html):
     broken = stamped(base_html)
     broken.find("h1")["style"] = "width:80px;height:200px;display:block"
-    r = verify(stamped(base_html), broken)
-    details = named(r, "Layout").details
-    check("a width AND height change reports both",
-          any("width" in d for d in details) and any("height" in d for d in details),
-          details)
+    details = named(verify(stamped(base_html), broken), "Layout").details
 
-    # D: recolour something not in modified_ids
+    assert any("width" in d for d in details)
+    assert any("height" in d for d in details)
+
+
+def test_an_unattributed_colour_change_is_caught(verify, base_html):
+    broken = stamped(base_html)
+    broken.find("h1")["style"] = "color:#c0ffee"
+    assert not named(verify(stamped(base_html), broken, []), "Colour").passed
+
+
+def test_a_declared_colour_change_is_allowed(verify, base_html):
     broken = stamped(base_html)
     target = broken.find("h1")
     target["style"] = "color:#c0ffee"
-    r = verify(stamped(base_html), broken, modified_ids=[])
-    check("D fails on an unattributed colour change", not named(r, "Colour").passed,
-          named(r, "Colour").summary)
+    report = verify(stamped(base_html), broken, [target.get("data-aai-id")])
+    assert named(report, "Colour").passed
 
-    # D: same change, but declared -> must pass
-    r = verify(stamped(base_html), broken, modified_ids=[target.get("data-aai-id")])
-    check("D passes when the change is declared", named(r, "Colour").passed,
-          named(r, "Colour").summary)
 
-    # C: introduce a contrast failure
+def test_a_contrast_regression_is_caught(verify, base_html):
+    """Ours whether we aimed at that element or not."""
     broken = stamped(base_html)
     broken.find("h1")["style"] = "color:#777;background:#888"
-    r = verify(stamped(base_html), broken, modified_ids=[])
-    check("C fails on a contrast regression", not named(r, "Contrast").passed,
-          named(r, "Contrast").summary)
-    # A regression is ours whether we aimed at that element or not, so it
-    # still fails even with nothing declared as modified.
-    check("...even though nothing was declared modified",
-          any("got worse" in d for d in named(r, "Contrast").details),
-          named(r, "Contrast").details)
+    contrast = named(verify(stamped(base_html), broken, []), "Contrast")
 
-    # C: a pre-existing failure we never claimed is not our failure
-    pre_existing = stamped(
-        '<html><body><p id="bad" style="color:#777;background:#888">dim</p>'
-        '</body></html>')
-    r = verify(stamped(str(pre_existing)), pre_existing, modified_ids=[])
-    check("an untouched pre-existing failure does not fail the run",
-          named(r, "Contrast").passed, named(r, "Contrast").summary)
-    check("...it is reported as remaining work instead",
-          named(r, "Remaining").details, named(r, "Remaining").summary)
-    check("...so the verdict is PASS, not INCOMPLETE", r.verdict == "PASS", r.verdict)
+    assert not contrast.passed
+    assert any("got worse" in d for d in contrast.details)
 
-    # C: a failure we DID claim to fix is still a failure
-    claimed = stamped(
-        '<html><body><p style="color:#777;background:#888">dim</p></body></html>')
-    target_id = claimed.find("p").get("data-aai-id")
-    r = verify(stamped(str(claimed)), claimed, modified_ids=[target_id])
-    check("a claimed element that still fails is reported",
-          not named(r, "Contrast").passed, named(r, "Contrast").summary)
 
-    # E: strip an alt attribute
-    before_soup = stamped(base_html)
-    for img in before_soup.find_all("img"):
+def test_an_untouched_pre_existing_failure_is_not_our_failure(verify):
+    soup = stamped('<html><body><p style="color:#777;background:#888">dim</p></body></html>')
+    report = verify(stamped(str(soup)), soup, [])
+
+    assert named(report, "Contrast").passed
+    assert named(report, "Remaining").details
+    assert report.verdict == "PASS"
+
+
+def test_a_claimed_element_that_still_fails_is_reported(verify):
+    soup = stamped('<html><body><p style="color:#777;background:#888">dim</p></body></html>')
+    target = soup.find("p").get("data-aai-id")
+    assert not named(verify(stamped(str(soup)), soup, [target]), "Contrast").passed
+
+
+def test_dropped_alt_coverage_is_caught(verify, base_html):
+    before = stamped(base_html)
+    for img in before.find_all("img"):
         img["alt"] = "described"
-    after_soup = stamped(str(before_soup))
-    del after_soup.find("img")["alt"]
-    r = verify(before_soup, after_soup)
-    check("E fails when alt coverage drops", not named(r, "Coverage").passed,
-          named(r, "Coverage").summary)
+    after = stamped(str(before))
+    del after.find("img")["alt"]
 
-    print("\n[5b] the scraped page's scripts must not run")
+    assert not named(verify(before, after), "Coverage").passed
 
-    hostile = stamped(
-        '<html><body><h1>kept</h1>'
-        '<script>document.body.innerHTML = "";</script>'
-        '</body></html>'
-    )
-    r = verify(stamped(str(hostile)), hostile)
-    check("a script that empties the body does not run",
-          named(r, "Visibility").passed, named(r, "Visibility").summary)
-    check("...so the verdict is not dictated by the page",
-          r.verdict == "PASS", r.verdict)
 
-    print("\n[6] verdict tiering")
+def test_the_scraped_pages_scripts_do_not_run(verify):
+    hostile = stamped('<html><body><h1>kept</h1>'
+                      '<script>document.body.innerHTML = "";</script></body></html>')
+    report = verify(stamped(str(hostile)), hostile)
 
-    def rep(**kw):
-        r = verifier.Report()
-        r.checks = [
-            verifier.CheckResult("Layout", kw.get("layout", True), "", [], "blocking"),
-            verifier.CheckResult("Contrast", kw.get("contrast", True), "", [], "objective"),
-            verifier.CheckResult("Pixels", kw.get("pixels", True), "", [], "advisory"),
-        ]
-        return r
+    assert named(report, "Visibility").passed
+    assert report.verdict == "PASS", "a page must not be able to dictate its verdict"
 
-    check("all pass -> PASS", rep().verdict == "PASS")
-    check("advisory only -> REVIEW", rep(pixels=False).verdict == "REVIEW")
-    check("objective -> INCOMPLETE", rep(contrast=False).verdict == "INCOMPLETE")
-    check("blocking -> BROKEN", rep(layout=False).verdict == "BROKEN")
-    check("blocking outranks objective",
-          rep(layout=False, contrast=False).verdict == "BROKEN")
-    check("no blended score: one good check can't mask a fatal one",
-          rep(layout=False, contrast=True, pixels=True).verdict == "BROKEN")
 
-    print("\n[7] graceful degradation")
+# --- verdict tiering --------------------------------------------------------
 
-    real_capture = verifier.capture
-    verifier.capture = lambda *a, **k: (_ for _ in ()).throw(
-        verifier.CaptureError("no browser"))
-    r = verify(stamped(base_html), stamped(base_html))
-    verifier.capture = real_capture
-    check("capture failure yields ERROR, not a false PASS", r.verdict == "ERROR", r.verdict)
-    check("...but coverage still reported", any(c.name == "Coverage" for c in r.checks))
-    check("...and the error is surfaced", bool(r.error), r.error)
+def report_with(**kwargs):
+    report = verifier.Report()
+    report.checks = [
+        verifier.CheckResult("Layout", kwargs.get("layout", True), "", [], "blocking"),
+        verifier.CheckResult("Contrast", kwargs.get("contrast", True), "", [],
+                             "objective"),
+        verifier.CheckResult("Pixels", kwargs.get("pixels", True), "", [], "advisory"),
+    ]
+    return report
 
-finally:
-    server.terminate()
-    server.wait(timeout=5)
 
-print("\n" + "=" * 62)
-print(f"  {PASSED} passed, {FAILED} failed")
-print("=" * 62)
-sys.exit(1 if FAILED else 0)
+@pytest.mark.parametrize("kwargs,expected", [
+    ({}, "PASS"),
+    ({"pixels": False}, "REVIEW"),
+    ({"contrast": False}, "INCOMPLETE"),
+    ({"layout": False}, "BROKEN"),
+    ({"layout": False, "contrast": False}, "BROKEN"),
+    # No blended score: one healthy check cannot mask a fatal one.
+    ({"layout": False, "contrast": True, "pixels": True}, "BROKEN"),
+])
+def test_the_verdict_is_a_rule_not_an_average(kwargs, expected):
+    assert report_with(**kwargs).verdict == expected
+
+
+# --- graceful degradation ---------------------------------------------------
+
+def test_a_capture_failure_is_an_error_not_a_false_pass(verify, monkeypatch):
+    def boom(*args, **kwargs):
+        raise verifier.CaptureError("no browser")
+
+    monkeypatch.setattr(verifier, "capture", boom)
+    report = verify(stamped("<p>x</p>"), stamped("<p>x</p>"))
+
+    assert report.verdict == "ERROR"
+    assert any(c.name == "Coverage" for c in report.checks), \
+        "coverage needs no browser, so it should still be reported"
+    assert report.error
