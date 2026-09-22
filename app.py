@@ -1,11 +1,13 @@
 import os
+from urllib.parse import urlparse
 
 import requests
-from flask import Flask, render_template, request
+from bs4 import BeautifulSoup
+from flask import Flask, Response, abort, render_template, request
 
 from src import runstore, verifier
 from src.nethttp import BlockedURL
-from src.webScraper import Scraper, UnsupportedContent
+from src.webScraper import Scraper, UnsupportedContent, strip_ids
 
 app = Flask(__name__, template_folder="templates")
 
@@ -101,6 +103,37 @@ def verify():
         run_id=run_id,
         issues=issues,
         report=report.as_dict(),
+    )
+
+
+@app.route("/download/<run_id>")
+def download(run_id):
+    """Hand back the remediated page as a file.
+
+    Two forms. The default strips the `data-aai-*` stamps, because those exist
+    only so the verifier can match old to new and have no business in a page
+    anyone deploys. `?stamped=1` keeps them, so a result can be fed back
+    through verification later.
+    """
+    run = runstore.load_run(run_id)      # validates the id; traversal is refused
+    if run is None:
+        abort(404)
+
+    _, after_html, meta = run
+    if request.args.get("stamped") not in ("1", "true", "yes"):
+        soup = BeautifulSoup(after_html, "html.parser")
+        strip_ids(soup)
+        after_html = str(soup)
+
+    host = urlparse(meta.get("url", "")).netloc or "page"
+    safe = "".join(c for c in host if c.isalnum() or c in "-.") or "page"
+    return Response(
+        after_html,
+        mimetype="text/html",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe}-accessible.html"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

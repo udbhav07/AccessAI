@@ -55,12 +55,14 @@
 					</div>
 				</form>
 			</div>
-			<div class="col-6 d-flex justify-content-center">
+			<div class="col-6 d-flex justify-content-center gap-2">
                 {% if run_id %}
                 <form action="/verify" method="POST" id="verify-form">
                     <input type="hidden" name="run_id" value="{{ run_id }}" />
                     <button class="btn btn-success" type="submit" id="verify-btn">Verify fixes</button>
                 </form>
+                <a class="btn btn-outline-success" id="download-btn"
+                   href="{{ url_for('download', run_id=run_id) }}">Download HTML</a>
                 {% endif %}
 			</div>
 		</div>

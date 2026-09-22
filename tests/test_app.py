@@ -178,6 +178,28 @@ webapp.verifier.run_checks = _real
 check("the same change list is shown again after verifying",
       b"a sleeping cat" in response.data, response.data[-300:])
 
+print("\n[4d] downloading the fixed page")
+
+response = client.get(f"/download/{rid_issues}")
+check("200 for a known run", response.status_code == 200, response.status_code)
+check("it is served as an attachment",
+      "attachment" in response.headers.get("Content-Disposition", ""),
+      response.headers.get("Content-Disposition"))
+check("the filename is built from the scraped host",
+      "example.com-accessible.html" in response.headers.get("Content-Disposition", ""),
+      response.headers.get("Content-Disposition"))
+check("the verifier's stamps are stripped by default",
+      b"data-aai-id" not in response.data, response.data[:200])
+
+stamped_response = client.get(f"/download/{rid_issues}?stamped=1")
+check("...but can be kept for re-verification",
+      b"data-aai-id" in stamped_response.data, stamped_response.data[:200])
+
+check("an unknown run is a 404",
+      client.get("/download/deadbeef").status_code == 404)
+check("a traversal attempt is a 404",
+      client.get("/download/..%2f..%2fetc").status_code == 404)
+
 print("\n[5] /verify on an expired or bogus run")
 
 response = client.post("/verify", data={"run_id": "deadbeef"})
