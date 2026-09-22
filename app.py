@@ -5,11 +5,22 @@ import requests
 from bs4 import BeautifulSoup
 from flask import Flask, Response, abort, render_template, request
 
-from src import runstore, verifier
+from src import gemini, runstore, verifier
 from src.nethttp import BlockedURL
 from src.webScraper import Scraper, UnsupportedContent, strip_ids
 
 app = Flask(__name__, template_folder="templates")
+
+
+@app.context_processor
+def template_defaults():
+    """Tell every page whether the model is actually reachable.
+
+    Without a key the fixers fall back to deterministic choices, which look
+    exactly like model output on screen. The user should not have to guess
+    which one they are reading.
+    """
+    return {"ai_enabled": gemini.ai_enabled()}
 
 
 @app.route("/", methods=["POST", "GET"])

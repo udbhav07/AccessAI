@@ -67,6 +67,15 @@
 			</div>
 		</div>
 
+        {% if not ai_enabled %}
+            <div class="alert alert-secondary mt-3" role="alert">
+                <strong>No API key configured.</strong>
+                Colours are chosen by the deterministic fallback, images are left
+                without alt text, and labels are left as they are. Set
+                <code>GEMAPI</code> in <code>googleapikey.env</code> for the full run.
+            </div>
+        {% endif %}
+
         {% if error %}
             <div class="alert alert-warning mt-3" role="alert">{{ error }}</div>
         {% endif %}

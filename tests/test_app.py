@@ -20,6 +20,7 @@ _stub = types.ModuleType("gemini")
 _stub.suggest_text_color = lambda fg, bg: None
 _stub.getAlt = lambda src: "a stubbed description"
 _stub.getLabel = lambda inp, label="": "Stub Label"
+_stub.ai_enabled = lambda: True
 sys.modules["src.gemini"] = _stub
 sys.modules["gemini"] = _stub
 
@@ -79,6 +80,17 @@ page = client.get("/")
 check("200 on the landing page", page.status_code == 200, page.status_code)
 check("the url field is there", b'name="website_link"' in page.data)
 check("no output section yet", b"Output:" not in page.data)
+
+print("\n[1b] a missing API key is visible, not silent")
+
+_real_ai_enabled = webapp.gemini.ai_enabled
+webapp.gemini.ai_enabled = lambda: False
+check("the banner appears with no key",
+      b"No API key configured" in client.get("/").data)
+webapp.gemini.ai_enabled = lambda: True
+check("...and is gone once one is set",
+      b"No API key configured" not in client.get("/").data)
+webapp.gemini.ai_enabled = _real_ai_enabled
 
 print("\n[2] a scrape that fails reaches the user as a message, not a 500")
 

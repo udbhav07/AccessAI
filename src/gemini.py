@@ -1,6 +1,6 @@
 import google.generativeai as genai
 import PIL.Image
-import io, os
+import io, logging, os
 from dotenv import load_dotenv
 
 from . import PROJECT_ROOT, nethttp
@@ -14,8 +14,27 @@ MAX_IMAGE_BYTES = 8_000_000
 # The key file lives at the project root, beside app.py -- resolve it
 # absolutely so the working directory does not matter.
 load_dotenv(os.path.join(PROJECT_ROOT, "googleapikey.env"))
-genai.configure(api_key=os.getenv("GEMAPI"))
+
+API_KEY = os.getenv("GEMAPI")
+
+# Every call site degrades to a deterministic fallback when the API is
+# unreachable, which is the right behaviour -- but it also means a machine
+# with no key produces plausible-looking output that no model ever saw. Say so
+# once, loudly, and let the app tell the user too (see `ai_enabled`).
+if not API_KEY:
+    logging.getLogger(__name__).warning(
+        "GEMAPI is not set: alt text, labels and colour suggestions will use "
+        "deterministic fallbacks. Copy googleapikey.env.example to "
+        "googleapikey.env and fill it in."
+    )
+
+genai.configure(api_key=API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
+
+
+def ai_enabled():
+    """Is there a key at all? Used to warn the user before they trust output."""
+    return bool(API_KEY)
 
 def getAlt(src):
     """Describe an image, or return None meaning "leave this one alone".
