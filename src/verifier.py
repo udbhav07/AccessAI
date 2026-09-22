@@ -158,6 +158,38 @@ class Report:
 
 # --- Phase 2: capture -------------------------------------------------------
 
+# Blocks inline and external scripts alike. A policy the document carries of
+# its own cannot loosen this one -- multiple CSPs intersect, they do not
+# override -- so a hostile page cannot opt itself back in.
+CSP_META = ('<meta http-equiv="Content-Security-Policy" '
+            'content="script-src \'none\'">')
+
+_HEAD_OPEN = re.compile(r"<head\b[^>]*>", re.I)
+
+
+def _no_scripts(html):
+    """Insert the script-blocking CSP as early in the document as possible.
+
+    It has to sit inside <head> and ahead of anything it is meant to stop, so
+    it goes immediately after the opening tag. A document with no <head> gets
+    it prepended, and the parser hoists it into the head it synthesises.
+
+    The tag carries no `data-aai-id`, so every check skips it -- and it is
+    added to both versions identically, so it cannot skew a comparison.
+    """
+    match = _HEAD_OPEN.search(html)
+    if match:
+        return html[:match.end()] + CSP_META + html[match.end():]
+    return CSP_META + html
+
+
+def _block_scripts(route):
+    if route.request.resource_type == "script":
+        route.abort()
+    else:
+        route.continue_()
+
+
 def capture(url, html_before, html_after):
     """Render both versions and snapshot them.
 
@@ -165,6 +197,15 @@ def capture(url, html_before, html_after):
     the current document, so the base URL established by `goto` survives and
     relative assets still resolve. Rendering both from the same page also
     means no dynamic-content drift between the two captures.
+
+    Scripts are blocked. The two documents being compared are static markup the
+    tool produced, and letting the scraped page's own JavaScript run would mean
+    executing arbitrary remote code on the server three times per verification
+    -- and worse, letting it rewrite the DOM between set_content and the
+    snapshot, so a hostile page could dictate its own verdict. JS-driven
+    mutation is the same non-determinism DETERMINISM_CSS already suppresses.
+    The cost is that a page which renders only under JS verifies as empty;
+    dynamic content is out of scope until the SPA work lands.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -182,13 +223,35 @@ def capture(url, html_before, html_after):
                 page = context.new_page()
                 page.set_default_timeout(NAV_TIMEOUT)
 
+                # Second layer behind the CSP: even if a policy were somehow
+                # not applied, no script file is fetched from the network.
+                # `java_script_enabled=False` cannot be used instead -- it
+                # breaks Playwright's own set_content handshake.
+                page.route("**/*", _block_scripts)
+
+                # The goto exists only to establish a base URL, so serve an
+                # empty document from the target's own address rather than
+                # downloading and rendering the real page to get it. Only the
+                # document URL is intercepted -- the stylesheets and images
+                # that set_content pulls in still load normally, which is what
+                # makes the rendering faithful.
+                # Registered after _block_scripts on purpose: Playwright checks
+                # handlers newest-first, so this one gets the document and
+                # everything else falls through to the script block.
+                page.route(
+                    lambda candidate: candidate == url,
+                    lambda route: route.fulfill(
+                        status=200, content_type="text/html",
+                        body="<!doctype html><title>base</title>"),
+                )
                 try:
                     page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
                 except Exception:
                     pass          # only needed to establish a base URL; content is replaced
 
                 def render(html):
-                    page.set_content(html, wait_until="load", timeout=NAV_TIMEOUT)
+                    page.set_content(_no_scripts(html), wait_until="load",
+                                     timeout=NAV_TIMEOUT)
                     page.add_style_tag(content=DETERMINISM_CSS)
                     snap = [ElementSnapshot.from_js(d) for d in page.evaluate(SNAPSHOT_JS)]
                     shot = page.screenshot(type="png", full_page=True)

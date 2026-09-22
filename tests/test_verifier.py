@@ -218,6 +218,19 @@ try:
     check("E fails when alt coverage drops", not named(r, "Coverage").passed,
           named(r, "Coverage").summary)
 
+    print("\n[5b] the scraped page's scripts must not run")
+
+    hostile = stamped(
+        '<html><body><h1>kept</h1>'
+        '<script>document.body.innerHTML = "";</script>'
+        '</body></html>'
+    )
+    r = verify(stamped(str(hostile)), hostile)
+    check("a script that empties the body does not run",
+          named(r, "Visibility").passed, named(r, "Visibility").summary)
+    check("...so the verdict is not dictated by the page",
+          r.verdict == "PASS", r.verdict)
+
     print("\n[6] verdict tiering")
 
     def rep(**kw):
