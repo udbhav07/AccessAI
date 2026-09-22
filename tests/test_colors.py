@@ -98,46 +98,52 @@ print(f"        (worst case across 5,832 backgrounds: {worst:.2f}:1)")
 
 print("\n[4] ensure_contrast — verify the model, then fall back")
 
-wc.reset_budget()
 _stub.suggest_calls.clear()
 _stub.suggest_reply = "#ffffff"                    # a good suggestion
-got = wc.ensure_contrast("#00f", "#000")
+got = wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget())
 check("accepts a passing suggestion", got == "#ffffff", got)
 
-wc.reset_budget()
 _stub.suggest_reply = "#0000ee"                    # still fails on black
-got = wc.ensure_contrast("#00f", "#000")
+got = wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget())
 check("rejects a failing suggestion", got != "#0000ee", got)
 check("...and the fallback passes", wc.check_contrast(got, "#000") >= 4.5)
 
-wc.reset_budget()
 _stub.suggest_reply = "not a colour at all"
-got = wc.ensure_contrast("#00f", "#000")
+got = wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget())
 check("survives an unparseable suggestion", wc.check_contrast(got, "#000") >= 4.5)
 
-wc.reset_budget()
 _stub.suggest_reply = None                         # API failure
-got = wc.ensure_contrast("#00f", "#000")
+got = wc.ensure_contrast("#00f", "#000", budget=wc.ColourBudget())
 check("survives a total API failure", wc.check_contrast(got, "#000") >= 4.5)
 
-wc.reset_budget()
 _stub.suggest_reply = "#ffffff"
 _stub.suggest_calls.clear()
+shared = wc.ColourBudget()
 for _ in range(30):
-    wc.ensure_contrast("#00f", "#000")
+    wc.ensure_contrast("#00f", "#000", budget=shared)
 check("cache collapses 30 identical pairs to 1 call",
       len(_stub.suggest_calls) == 1, f"{len(_stub.suggest_calls)} calls")
 
-wc.reset_budget()
 _stub.suggest_calls.clear()
+shared = wc.ColourBudget()
 for i in range(40):                                 # 40 distinct pairs
-    wc.ensure_contrast(f"#0000{i:02x}", "#000")
+    wc.ensure_contrast(f"#0000{i:02x}", "#000", budget=shared)
 check(f"call budget caps at {wc.MAX_GEMINI_CALLS}",
       len(_stub.suggest_calls) == wc.MAX_GEMINI_CALLS, f"{len(_stub.suggest_calls)} calls")
 
+# The whole point of making this an object: one page's allowance and one
+# page's cached decisions must not reach another page.
+_stub.suggest_calls.clear()
+budget_a, budget_b = wc.ColourBudget(), wc.ColourBudget()
+wc.ensure_contrast("#00f", "#000", budget=budget_a)
+wc.ensure_contrast("#00f", "#000", budget=budget_b)
+check("two budgets do not share a cache", len(_stub.suggest_calls) == 2,
+      f"{len(_stub.suggest_calls)} calls")
+check("...nor a counter", budget_a.used == 1 and budget_b.used == 1,
+      (budget_a.used, budget_b.used))
+
 print("\n[5] inline styles")
 
-wc.reset_budget()
 _stub.suggest_reply = None                          # force deterministic everywhere
 report = []
 s = soup_of('<h2 style="background-color: #000; color: #00f; padding: 2em">line-1</h2>')
@@ -177,7 +183,6 @@ check("element with no colour declarations is skipped", report == [])
 
 print("\n[5b] abstaining instead of assuming a white canvas")
 
-wc.reset_budget()
 report = []
 # The theme is in a stylesheet this pass cannot read. Guessing white here is
 # what made the fixer push text on a dark page *darker*.
@@ -237,7 +242,6 @@ check("passing attribute pair left alone", report == [], report)
 
 print("\n[7] <style> blocks")
 
-wc.reset_budget()
 report = []
 css = "#ab{background-color:aqua;color:cadetblue}\n.hero{background:url('img/x.png') no-repeat}"
 s = soup_of(f"<style>{css}</style>")
@@ -281,7 +285,6 @@ def fake_get(url, timeout=None, max_bytes=None):
 
 wc.nethttp.get = fake_get
 
-wc.reset_budget()
 report, fetched[:] = [], []
 s = soup_of('<link rel="stylesheet" href="css/bad.css">'
             '<link rel="stylesheet" href="css/good.css">'
@@ -308,7 +311,6 @@ check("<link rel=icon> untouched",
 
 print("\n[9] ChangeColor end-to-end on the demo fixture")
 
-wc.reset_budget()
 
 
 def fixture_get(url, timeout=None, max_bytes=None):
@@ -359,7 +361,6 @@ def fixture_fetch(url, timeout=None, max_bytes=None):
 
 
 wc.nethttp.get = fixture_fetch
-wc.reset_budget()
 _stub.suggest_reply = None                      # deterministic path only
 
 with open(os.path.join(ROOT, "templates", "demo_all_sources.html"), encoding="utf-8") as fh:

@@ -136,18 +136,30 @@ def _deterministic_color(fg_rgb, bg_rgb, threshold):
     return _to_hex(target)
 
 
-_cache = {}
-_calls_used = 0
+class ColourBudget:
+    """One page's API allowance and its suggestion cache.
+
+    An object rather than module globals, because two requests handled at once
+    shared both: the second one's reset zeroed the first one's counter, so a
+    page could quietly spend twice its allowance, and the first one's cached
+    decisions were handed to a completely different page. The image and label
+    fixers are already threaded, so concurrency here is not hypothetical.
+    """
+
+    def __init__(self, max_calls=MAX_GEMINI_CALLS):
+        self.max_calls = max_calls
+        self.used = 0
+        self.cache = {}
+
+    def spend(self):
+        """Claim one call, or return False if the allowance is gone."""
+        if self.used >= self.max_calls:
+            return False
+        self.used += 1
+        return True
 
 
-def reset_budget():
-    """Clear the per-page suggestion cache and the Gemini call counter."""
-    global _calls_used
-    _cache.clear()
-    _calls_used = 0
-
-
-def ensure_contrast(fg_raw, bg_raw, threshold=WCAG_AA_NORMAL):
+def ensure_contrast(fg_raw, bg_raw, threshold=WCAG_AA_NORMAL, budget=None):
     """Return a text colour that is guaranteed to pass `threshold` against `bg_raw`.
 
     Asks Gemini first, **verifies its answer** with check_contrast, and falls
@@ -155,8 +167,12 @@ def ensure_contrast(fg_raw, bg_raw, threshold=WCAG_AA_NORMAL):
     the per-page API budget is spent. Results are cached on the resolved
     colour pair, so a page that reuses one bad pair 30 times costs one call.
     Returns None only when the inputs themselves cannot be resolved.
+
+    Without a `budget` every call gets a fresh one -- fine for a one-off, but
+    a caller working through a page should make one and pass it, or the cache
+    and the cap do nothing.
     """
-    global _calls_used
+    budget = budget if budget is not None else ColourBudget()
 
     fg_rgb = resolve_color(fg_raw)
     bg_rgb = resolve_color(bg_raw)
@@ -164,12 +180,11 @@ def ensure_contrast(fg_raw, bg_raw, threshold=WCAG_AA_NORMAL):
         return None
 
     key = (fg_rgb, bg_rgb, threshold)
-    if key in _cache:
-        return _cache[key]
+    if key in budget.cache:
+        return budget.cache[key]
 
     chosen = None
-    if _calls_used < MAX_GEMINI_CALLS:
-        _calls_used += 1
+    if budget.spend():
         suggestion = suggest_text_color(_to_hex(fg_rgb), _to_hex(bg_rgb))
         if suggestion:
             verified = check_contrast(suggestion, _to_hex(bg_rgb))
@@ -179,7 +194,7 @@ def ensure_contrast(fg_raw, bg_raw, threshold=WCAG_AA_NORMAL):
     if chosen is None:
         chosen = _deterministic_color(fg_rgb, bg_rgb, threshold)
 
-    _cache[key] = chosen
+    budget.cache[key] = chosen
     return chosen
 
 
@@ -352,12 +367,13 @@ def _ids_for_selector(soup, selector):
 
 # --- the four fixers --------------------------------------------------------
 
-def fix_inline_styles(soup, report, threshold=WCAG_AA_NORMAL):
+def fix_inline_styles(soup, report, threshold=WCAG_AA_NORMAL, budget=None):
     """Fix failing colour pairs declared in ``style="..."`` attributes.
 
     Only the ``color`` property is touched; every other declaration on the
     element is preserved exactly as written.
     """
+    budget = budget if budget is not None else ColourBudget()
     unreadable_css = document_has_stylesheets(soup)
 
     for el in soup.find_all(style=True):
@@ -393,7 +409,7 @@ def fix_inline_styles(soup, report, threshold=WCAG_AA_NORMAL):
 
         fg_key = fg_raw or _to_hex(fg_rgb)
         bg_key = bg_raw or _to_hex(bg_rgb)
-        new = ensure_contrast(fg_key, bg_key, threshold)
+        new = ensure_contrast(fg_key, bg_key, threshold, budget)
         if new is None:
             continue
 
@@ -415,7 +431,7 @@ _PRESENTATIONAL_PAIRS = {
 }
 
 
-def fix_presentational_attributes(soup, report, threshold=WCAG_AA_NORMAL):
+def fix_presentational_attributes(soup, report, threshold=WCAG_AA_NORMAL, budget=None):
     """Fix legacy colour attributes **in place**.
 
     Deliberately does not convert these to inline styles: presentational
@@ -423,6 +439,7 @@ def fix_presentational_attributes(soup, report, threshold=WCAG_AA_NORMAL):
     so converting would silently promote them above any stylesheet that was
     overriding them, visibly changing the page.
     """
+    budget = budget if budget is not None else ColourBudget()
     unreadable_css = document_has_stylesheets(soup)
 
     for tag, attrs in _PRESENTATIONAL_PAIRS.items():
@@ -446,7 +463,7 @@ def fix_presentational_attributes(soup, report, threshold=WCAG_AA_NORMAL):
                 before = _ratio(_relative_luminance(fg_rgb), _relative_luminance(bg_rgb))
                 if before >= threshold:
                     continue
-                new = ensure_contrast(fg_raw, bg_key, threshold)
+                new = ensure_contrast(fg_raw, bg_key, threshold, budget)
                 if new is None:
                     continue
                 el[attr] = new
@@ -455,13 +472,14 @@ def fix_presentational_attributes(soup, report, threshold=WCAG_AA_NORMAL):
 
 
 def fix_stylesheet(css_text, sheet_url, report, source, threshold=WCAG_AA_NORMAL,
-                   soup=None):
+                   soup=None, budget=None):
     """Absolutise every ``url()`` and rewrite failing colour pairs.
 
     Returns ``(css, contrast_changed)``. The returned CSS *always* has its
     url() references rewritten against `sheet_url`; `contrast_changed` says
     only whether a colour was actually replaced.
     """
+    budget = budget if budget is not None else ColourBudget()
     try:
         sheet = cssutils.parseString(css_text)
     except Exception as exc:
@@ -489,7 +507,7 @@ def fix_stylesheet(css_text, sheet_url, report, source, threshold=WCAG_AA_NORMAL
         before = check_contrast(fg_raw, bg_raw)
         if before is None or before >= threshold:
             continue
-        new = ensure_contrast(fg_raw, bg_raw, threshold)
+        new = ensure_contrast(fg_raw, bg_raw, threshold, budget)
         if new is None:
             continue
         rule.style.setProperty(
@@ -506,20 +524,20 @@ def fix_stylesheet(css_text, sheet_url, report, source, threshold=WCAG_AA_NORMAL
     return css, changed
 
 
-def fix_style_blocks(soup, page_url, report, threshold=WCAG_AA_NORMAL):
+def fix_style_blocks(soup, page_url, report, threshold=WCAG_AA_NORMAL, budget=None):
     """Handle ``<style>`` blocks -- already downloaded, so no network needed."""
     for tag in soup.find_all("style"):
         css_text = tag.string if tag.string is not None else tag.get_text()
         if not css_text or not css_text.strip():
             continue
         css, _ = fix_stylesheet(css_text, page_url, report, "style-block",
-                                threshold, soup=soup)
+                                threshold, soup=soup, budget=budget)
         # Always written back: the url() rewrite matters even when no colour
         # changed, because this CSS gets rendered from a different base URL.
         tag.string = css
 
 
-def fix_linked_stylesheets(soup, page_url, report, threshold=WCAG_AA_NORMAL):
+def fix_linked_stylesheets(soup, page_url, report, threshold=WCAG_AA_NORMAL, budget=None):
     """Fetch each linked stylesheet; inline it only if a colour actually changed."""
     for link in list(soup.find_all("link")):
         rel = link.get("rel") or []
@@ -543,7 +561,8 @@ def fix_linked_stylesheets(soup, page_url, report, threshold=WCAG_AA_NORMAL):
             continue
 
         css, changed = fix_stylesheet(
-            response.text, sheet_url, report, "stylesheet", threshold, soup=soup
+            response.text, sheet_url, report, "stylesheet", threshold, soup=soup,
+            budget=budget
         )
         if not changed:
             continue          # nothing to fix, so don't inline it and don't
@@ -562,12 +581,14 @@ def ChangeColor(url, soup):
     carrying the selector/element, the old and new colour, and the contrast
     ratio before and after.
     """
-    reset_budget()
+    budget = ColourBudget()
     report = []
-    fix_inline_styles(soup, report)
-    fix_presentational_attributes(soup, report)
-    fix_style_blocks(soup, url, report)      # before the linked pass, so freshly
-    fix_linked_stylesheets(soup, url, report)  # inlined sheets aren't re-processed
+    fix_inline_styles(soup, report, budget=budget)
+    fix_presentational_attributes(soup, report, budget=budget)
+    # style blocks before the linked pass, so freshly inlined sheets are not
+    # re-processed; one budget across all four, since it is one page.
+    fix_style_blocks(soup, url, report, budget=budget)
+    fix_linked_stylesheets(soup, url, report, budget=budget)
     return report
 
 
