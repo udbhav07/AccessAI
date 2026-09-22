@@ -74,14 +74,14 @@ def stub_model():
     different behaviour still overrides these with the ordinary
     function-scoped `monkeypatch`.
     """
-    from src import webColorss, webScraper
+    from src import contrast, webScraper
 
     patch = pytest.MonkeyPatch()
     patch.setattr(webScraper, "getAlt", lambda src: "a stubbed description")
     patch.setattr(webScraper, "getLabel", lambda inp, label="": "Stub Label")
     # None forces the deterministic colour path, which is what makes the
     # colour assertions reproducible.
-    patch.setattr(webColorss, "suggest_text_color", lambda fg, bg: None)
+    patch.setattr(contrast, "suggest_text_color", lambda fg, bg: None)
     yield
     patch.undo()
 

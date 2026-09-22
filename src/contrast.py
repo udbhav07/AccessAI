@@ -20,7 +20,7 @@ import cssutils
 import requests
 from PIL import ImageColor
 
-from . import nethttp
+from . import ID_ATTR, nethttp
 from .gemini import suggest_text_color
 
 cssutils.log.setLevel(logging.CRITICAL)   # cssutils is extremely noisy on real-world CSS
@@ -331,8 +331,6 @@ def _effective_foreground(el, stylesheets_present=False):
     return None, DEFAULT_TEXT
 
 
-ID_ATTR = "data-aai-id"
-
 
 def _record(report, source, target, old, new, before, after, ids=()):
     # str() on the colours and the selector: cssutils hands back its own
@@ -634,7 +632,7 @@ def ChangeColor(url, soup):
 
 
 # Run as a module so the relative import of gemini resolves:
-#     python -m src.webColorss
+#     python -m src.contrast
 if __name__ == "__main__":
     # Offline smoke test of the maths -- no network, no API calls.
     for fg, bg in [("cadetblue", "aqua"), ("#00f", "#000"),

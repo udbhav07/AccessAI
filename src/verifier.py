@@ -18,7 +18,7 @@ import numpy as np
 from PIL import Image
 
 from . import a11y
-from .webColorss import check_contrast
+from .contrast import check_contrast
 
 VIEWPORT = {"width": 1280, "height": 720}
 GEOMETRY_TOLERANCE = 1.0        # px; sub-pixel font rendering is not a layout break

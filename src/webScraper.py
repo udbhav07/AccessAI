@@ -3,21 +3,14 @@ from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from . import a11y, nethttp
+from . import ID_ATTR, NEW_ATTR, a11y, nethttp
 from .gemini import getAlt, getLabel
-from .webColorss import ChangeColor
+from .contrast import ChangeColor
 
-# Stamped on every element before any fixer runs, so the verifier can match
-# old -> new. A selector path like `div:nth-child(3) > input` cannot be used:
-# inserting a <label> shifts the nth-child index of every following sibling,
-# so the fix would invalidate its own identity scheme.
 # Each image and each input needs its own Gemini round-trip (~1-3s). They are
 # independent, so they overlap; the cap keeps a large page from opening
 # hundreds of concurrent connections.
 MAX_WORKERS = 8
-
-ID_ATTR = "data-aai-id"
-NEW_ATTR = "data-aai-new"
 
 ScrapeResult = namedtuple(
     "ScrapeResult", "url soup issues html_before modified_ids"

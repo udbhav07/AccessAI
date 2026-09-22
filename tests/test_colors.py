@@ -1,7 +1,7 @@
 """Offline tests for the colour-contrast remediation.
 
 No key, no network: the model is stubbed in conftest, and `suggestions`
-below replaces the one call webColorss makes so a test can dictate what the
+below replaces the one call the module makes so a test can dictate what the
 model "answers" and count how often it was asked.
 """
 
@@ -11,7 +11,7 @@ import types
 import pytest
 from bs4 import BeautifulSoup
 
-from src import webColorss as wc
+from src import contrast as wc
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(ROOT, "tests", "fixtures")
