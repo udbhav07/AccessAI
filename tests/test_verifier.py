@@ -184,6 +184,62 @@ soup, _ = labelled_soup("<label>Email <input></label>")
 check("coverage counts a wrapping label",
       verifier._label_coverage(soup) == (1, 1), verifier._label_coverage(soup))
 
+print("\n[3c] url absolutisation")
+
+
+def absolutised(html, url="http://example.com/dir/page.html"):
+    scraper = Scraper()
+    scraper.soup = BeautifulSoup(html, "html.parser")
+    scraper.url = url
+    scraper.absolutise_urls()
+    return scraper.soup
+
+
+s = absolutised('<form action="/submit"><input name="pw"></form>')
+check("a relative form action would have posted to this app",
+      s.find("form")["action"] == "http://example.com/submit",
+      s.find("form")["action"])
+
+s = absolutised('<img srcset="a.png 1x, sub/b.png 2x" src="a.png">')
+check("srcset candidates are rewritten",
+      s.find("img")["srcset"] ==
+      "http://example.com/dir/a.png 1x, http://example.com/dir/sub/b.png 2x",
+      s.find("img")["srcset"])
+
+s = absolutised('<div style="background:url(bg.png) #fff"></div>')
+check("url() in an inline style is rewritten",
+      "http://example.com/dir/bg.png" in s.find("div")["style"],
+      s.find("div")["style"])
+
+s = absolutised('<div style="background:url(data:image/gif;base64,R0lGOD)"></div>')
+check("a data: uri is left alone",
+      "data:image/gif;base64,R0lGOD" in s.find("div")["style"],
+      s.find("div")["style"])
+
+s = absolutised('<video poster="p.jpg" src="v.mp4"></video>'
+                '<object data="o.swf"></object><iframe src="f.html"></iframe>')
+check("poster, object data and iframe src are covered",
+      all("http://example.com/dir/" in s.find(t)[a]
+          for t, a in (("video", "poster"), ("video", "src"),
+                       ("object", "data"), ("iframe", "src"))),
+      str(s))
+
+s = absolutised('<head><base href="/assets/"></head><body>'
+                '<img src="x.png"><a href="y.html">y</a></body>')
+check("<base href> is honoured, not ignored",
+      s.find("img")["src"] == "http://example.com/assets/x.png",
+      s.find("img")["src"])
+check("...for links too",
+      s.find("a")["href"] == "http://example.com/assets/y.html", s.find("a")["href"])
+check("...and the <base> is removed once everything is absolute",
+      s.find("base") is None, str(s))
+
+s = absolutised('<a href="https://other.example/x">abs</a>'
+                '<a href="#top">frag</a><a href="mailto:a@b.c">mail</a>')
+hrefs = [a["href"] for a in s.find_all("a")]
+check("absolute, fragment and mailto hrefs survive urljoin",
+      hrefs == ["https://other.example/x", "#top", "mailto:a@b.c"], hrefs)
+
 print("\n[4] live capture on the demo fixture (real browser)")
 
 server = subprocess.Popen(

@@ -1,3 +1,4 @@
+import re
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
@@ -31,6 +32,43 @@ HTML_TYPES = ("text/html", "application/xhtml+xml")
 
 class UnsupportedContent(ValueError):
     """The URL returned something that is not an HTML document."""
+
+
+# Every attribute that carries a URL the browser will go and fetch.
+URL_ATTRS = (
+    ('a', 'href'), ('area', 'href'), ('link', 'href'),
+    ('img', 'src'), ('script', 'src'), ('iframe', 'src'), ('embed', 'src'),
+    ('source', 'src'), ('audio', 'src'), ('video', 'src'), ('track', 'src'),
+    ('input', 'src'), ('video', 'poster'), ('object', 'data'),
+    ('form', 'action'),
+)
+SRCSET_ATTRS = (('img', 'srcset'), ('source', 'srcset'))
+
+_CSS_URL = re.compile(r"""url\(\s*(['"]?)(?!['"]?(?:data:|#))([^'")]+)\1\s*\)""", re.I)
+
+
+def _absolutise_srcset(value, base):
+    """Rewrite a ``srcset``: a comma-separated list of "url descriptor" pairs."""
+    out = []
+    for candidate in value.split(','):
+        parts = candidate.strip().split(maxsplit=1)
+        if not parts:
+            continue
+        parts[0] = urljoin(base, parts[0])
+        out.append(' '.join(parts))
+    return ', '.join(out)
+
+
+def _absolutise_css_urls(css, base):
+    """Rewrite ``url(...)`` inside an inline style attribute.
+
+    data: and fragment URLs are left alone -- urljoin would mangle the first
+    and the second refers to the document, not to a file.
+    """
+    return _CSS_URL.sub(
+        lambda m: f"url({m.group(1)}{urljoin(base, m.group(2).strip())}{m.group(1)})",
+        css,
+    )
 
 
 def stamp_ids(soup):
@@ -101,13 +139,35 @@ class Scraper:
 
         A `srcdoc` iframe inherits its base URL from the parent document, so
         without this every stylesheet, image and script would be requested
-        from the app's own origin instead of the scraped site.
+        from the app's own origin instead of the scraped site. `form[action]`
+        matters most of all: left relative, submitting the preview posts the
+        visitor's data to *this* app.
         """
-        for tag, attr in (('a', 'href'), ('img', 'src'),
-                          ('link', 'href'), ('script', 'src')):
+        base_el = self.soup.find('base', href=True)
+        base = urljoin(self.url, base_el['href']) if base_el else self.url
+
+        for tag, attr in URL_ATTRS:
+            for el in self.soup.find_all(tag):
+                value = el.get(attr)
+                if value is None or value.startswith("#"):
+                    # A bare fragment points inside this document. urljoin
+                    # would turn it into a full URL, and clicking it in the
+                    # preview would navigate the frame away from the result.
+                    continue
+                el[attr] = urljoin(base, value)
+
+        for tag, attr in SRCSET_ATTRS:
             for el in self.soup.find_all(tag):
                 if attr in el.attrs:
-                    el[attr] = urljoin(self.url, el[attr])
+                    el[attr] = _absolutise_srcset(el[attr], base)
+
+        for el in self.soup.find_all(style=True):
+            el['style'] = _absolutise_css_urls(el['style'], base)
+
+        if base_el:
+            # Everything is absolute now, so a surviving <base> would only
+            # re-resolve it -- and wrongly.
+            base_el.decompose()
 
     def get_imgs(self):
         """Generate alt text for images that have none.
