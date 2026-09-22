@@ -43,3 +43,5 @@ dist/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+docs/internal
