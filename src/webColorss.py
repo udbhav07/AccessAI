@@ -42,6 +42,10 @@ _NON_COLOURS = {
 
 _URL_TOKEN = re.compile(r"url\([^)]*\)", re.I)
 _FUNC_COLOUR = re.compile(r"(?:rgba?|hsla?)\([^)]*\)", re.I)
+# A backdrop that is not one flat colour. `background: url(hero.png) #fff`
+# used to resolve to #fff, and a gradient to nothing at all -- in both cases
+# the ratio came out against a colour that is not what gets painted.
+_IMAGE_BG = re.compile(r"\burl\s*\(|gradient\s*\(", re.I)
 
 
 # --- colour parsing ---------------------------------------------------------
@@ -218,10 +222,27 @@ def _background_shorthand_color(value):
     return None
 
 
+class NonUniformBackground(Exception):
+    """The backdrop is an image or a gradient, so it has no single colour.
+
+    Raised rather than returned so it cannot be mistaken for "no background
+    declared here, keep walking up" -- an element painted with a hero image
+    must stop the walk, not fall through to its parent's flat colour.
+    """
+
+
 def _declared_background(decl):
-    return decl.getPropertyValue("background-color") or _background_shorthand_color(
-        decl.getPropertyValue("background")
-    )
+    """The flat colour this declaration paints, if it paints one.
+
+    Raises NonUniformBackground when the declaration paints an image or a
+    gradient instead. WCAG needs the actual rendered pixels for those, which
+    a stylesheet parser cannot produce.
+    """
+    explicit = decl.getPropertyValue("background-color")
+    shorthand = decl.getPropertyValue("background")
+    if _IMAGE_BG.search(shorthand or "") and not resolve_color(explicit):
+        raise NonUniformBackground(shorthand)
+    return explicit or _background_shorthand_color(shorthand)
 
 
 def _inline_decl(node):
@@ -273,7 +294,10 @@ def _effective_background(el, stylesheets_present=False):
     while node is not None:
         decl = _inline_decl(node)
         if decl is not None:
-            raw = _declared_background(decl)
+            try:
+                raw = _declared_background(decl)
+            except NonUniformBackground:
+                return None, None     # painted, but not with a colour we can judge
             rgb = resolve_color(raw)
             if rgb:
                 return raw, rgb
@@ -382,7 +406,15 @@ def fix_inline_styles(soup, report, threshold=WCAG_AA_NORMAL, budget=None):
             continue
 
         own_fg = decl.getPropertyValue("color")
-        own_bg = _declared_background(decl)
+        try:
+            own_bg = _declared_background(decl)
+        except NonUniformBackground as exc:
+            if own_fg:
+                _record_abstention(
+                    report, el.name,
+                    f"text sits on a non-uniform background ({exc})",
+                    element=el.get(ID_ATTR))
+            continue
         if not own_fg and not own_bg:
             continue          # element takes no part in the colour decision
 
@@ -500,7 +532,14 @@ def fix_stylesheet(css_text, sheet_url, report, source, threshold=WCAG_AA_NORMAL
         if rule.type != rule.STYLE_RULE:
             continue
         fg_raw = rule.style.getPropertyValue("color")
-        bg_raw = _declared_background(rule.style)
+        try:
+            bg_raw = _declared_background(rule.style)
+        except NonUniformBackground as exc:
+            if fg_raw:
+                _record_abstention(
+                    report, rule.selectorText,
+                    f"text sits on a non-uniform background ({exc})")
+            continue
         if not fg_raw or not bg_raw:
             continue          # only one half declared here; resolving the rest
                               # of the cascade needs a browser, not a parser

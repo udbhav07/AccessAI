@@ -217,6 +217,50 @@ check("...but not a favicon",
 check("...and not a bare document",
       not wc.document_has_stylesheets(soup_of("<p>hi</p>")))
 
+print("\n[5c] an image or gradient backdrop is not a colour")
+
+report = []
+s = soup_of('<p style="color:#888; background:url(hero.png) #fff">on a photo</p>')
+wc.fix_inline_styles(s, report)
+check("text over a background image is not judged against the flat colour",
+      all(e["type"] == "contrast-skipped" for e in report), report)
+check("...and its colour is untouched", "#888" in s.find("p")["style"],
+      s.find("p")["style"])
+
+report = []
+s = soup_of('<p style="color:#888; background:linear-gradient(#000,#fff)">grad</p>')
+wc.fix_inline_styles(s, report)
+check("a gradient backdrop abstains too",
+      any(e["type"] == "contrast-skipped" for e in report), report)
+
+report = []
+s = soup_of('<div style="background:url(hero.png)"><p style="color:#eee">x</p></div>')
+wc.fix_inline_styles(s, report)
+check("the walk stops at an image ancestor rather than falling through to white",
+      any(e["type"] == "contrast-skipped" for e in report), report)
+
+report = []
+# A colour behind an image is still not what the text sits on -- the image
+# paints over it wherever it covers, so this abstains as well.
+s = soup_of('<p style="color:#888; background:url(hero.png) no-repeat #000">both</p>')
+wc.fix_inline_styles(s, report)
+check("a colour behind an image does not make it judgeable",
+      any(e["type"] == "contrast-skipped" for e in report), report)
+
+report = []
+s = soup_of('<p style="color:#333; background-color:#000">flat</p>')
+wc.fix_inline_styles(s, report)
+check("a plain background-color is unaffected by any of this",
+      any(e["type"] == "contrast" for e in report), report)
+
+report = []
+s = soup_of("<style>.hero{background:url('img/x.png') no-repeat;color:#888}</style>")
+wc.fix_style_blocks(s, "https://example.com/page.html", report)
+check("a stylesheet rule over an image abstains",
+      any(e["type"] == "contrast-skipped" for e in report), report)
+check("...and the url is still absolutised",
+      "https://example.com/img/x.png" in s.find("style").string, s.find("style").string)
+
 print("\n[6] presentational attributes")
 
 report = []
