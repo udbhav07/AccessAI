@@ -12,6 +12,40 @@ from src.webScraper import Scraper, UnsupportedContent, strip_ids
 app = Flask(__name__, template_folder="templates")
 
 
+@app.after_request
+def security_headers(response):
+    """Headers the app should have been sending all along.
+
+    The CSP pairs with the empty `sandbox` on the output iframe: the preview
+    is third-party markup rendered inside our page, so it must not be able to
+    run anything.
+
+    Checked in Chromium: because the frame is sandboxed into an opaque origin,
+    this policy does not reach inside it -- the scraped page's own stylesheets
+    and images still load and the preview renders as the site looks. Worth
+    re-checking if anyone tightens this, because a policy that *did* inherit
+    would leave every preview unstyled, which is most of the point of it.
+
+    The jsdelivr entries are for the Bootstrap bundle the template pulls in;
+    style-src needs 'unsafe-inline' only because Bootstrap components set
+    inline styles at runtime.
+    """
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: https:; "
+        "frame-src data:; "
+        "base-uri 'none'; "
+        "form-action 'self'",
+    )
+    return response
+
+
 @app.context_processor
 def template_defaults():
     """Tell every page whether the model is actually reachable.

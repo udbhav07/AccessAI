@@ -81,6 +81,37 @@ check("200 on the landing page", page.status_code == 200, page.status_code)
 check("the url field is there", b'name="website_link"' in page.data)
 check("no output section yet", b"Output:" not in page.data)
 
+print("\n[1a] security headers")
+
+headers = client.get("/").headers
+for name, expected in [
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+    ("X-Frame-Options", "DENY"),
+]:
+    check(f"{name} is set", headers.get(name) == expected, headers.get(name))
+
+csp = headers.get("Content-Security-Policy", "")
+check("a CSP is sent", bool(csp), csp)
+check("...it blocks inline script", "'unsafe-inline'" not in csp.split("style-src")[0],
+      csp)
+check("...it pins base-uri, so a scraped <base> cannot retarget us",
+      "base-uri 'none'" in csp, csp)
+check("...and form-action, so the preview cannot post elsewhere",
+      "form-action 'self'" in csp, csp)
+check("the download route keeps nosniff",
+      "nosniff" in client.get("/download/deadbeef").headers.get(
+          "X-Content-Type-Options", ""))
+
+# The template loads Bootstrap from a CDN. If the CSP and the template ever
+# disagree the page silently loses its styling, so check they still match.
+landing = client.get("/").data.decode()
+for origin in {line.split('"')[1].split("/")[2]
+               for line in landing.splitlines()
+               if 'src="https://' in line or 'href="https://' in line}:
+    check(f"the CSP allows {origin}, which the template loads from",
+          origin in csp, csp)
+
 print("\n[1b] a missing API key is visible, not silent")
 
 _real_ai_enabled = webapp.gemini.ai_enabled

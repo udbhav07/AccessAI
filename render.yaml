@@ -1,0 +1,21 @@
+# Deployment contract for Render. Kept in the repo so the build steps are
+# versioned rather than living only in the dashboard.
+services:
+  - type: web
+    name: accessai
+    runtime: python
+    plan: free
+    # Chromium is required by the verifier. Without it every /verify returns
+    # the ERROR verdict, which looks like a bug in the tool rather than a
+    # missing build step.
+    buildCommand: "pip install -r requirements.txt && python -m playwright install --with-deps chromium"
+    # --threads 1 is deliberate: the fixers already fan out to a thread pool
+    # of their own, and gunicorn threading on top of that buys nothing.
+    # --timeout 180 because a real scan is minutes of Gemini round-trips plus
+    # a browser launch; the default 30s would kill most runs mid-flight.
+    startCommand: "gunicorn app:app --workers 2 --threads 1 --timeout 180"
+    envVars:
+      - key: GEMAPI
+        sync: false          # set in the dashboard, never committed
+      - key: PYTHON_VERSION
+        value: "3.12"
