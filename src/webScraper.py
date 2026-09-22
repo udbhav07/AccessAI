@@ -276,10 +276,10 @@ class Scraper:
 
 
 # Run as a module so the relative imports resolve:
-#     python -m src.webScraper http://localhost:8000/templates/experiment.html
+#     python -m src.webScraper http://localhost:8000/tests/fixtures/experiment.html
 if __name__ == "__main__":
     import sys
-    target = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000/experiment.html"
+    target = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000/tests/fixtures/experiment.html"
     result = Scraper().scrape_url(target)
     print(f"{len(result.issues)} colour fixes, {len(result.modified_ids)} elements touched")
     for entry in result.issues:

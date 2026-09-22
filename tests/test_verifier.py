@@ -32,11 +32,11 @@ from src import a11y, nethttp, runstore, verifier, webScraper     # noqa: E402
 from src.webScraper import Scraper, stamp_ids, strip_ids           # noqa: E402
 
 PORT = 8791
-# Served from the project root, not templates/: the fixture's images live at
-# ../DemoImages, so serving templates/ would 404 them -- and a broken image
+# Served from the project root, not tests/fixtures/: the fixture's images live
+# at ../../DemoImages, so serving the fixture dir would 404 them -- and a broken image
 # renders at 16px without alt text but expands to fit it once alt is added,
 # which is a real (but fixture-induced) layout change.
-BASE = f"http://localhost:{PORT}/templates"
+BASE = f"http://localhost:{PORT}/tests/fixtures"
 
 # The fixture server is on localhost, which is exactly what nethttp refuses.
 # Opt in for the duration of the suite.
@@ -277,7 +277,7 @@ print("\n[4] live capture on the demo fixture (real browser)")
 
 server = subprocess.Popen(
     [sys.executable, "-m", "http.server", str(PORT)],
-    cwd=ROOT,          # serve the project root: the fixture's images are at ../DemoImages
+    cwd=ROOT,          # serve the project root: the images are at ../../DemoImages
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 )
 time.sleep(2)

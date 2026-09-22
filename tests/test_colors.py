@@ -392,10 +392,10 @@ check("#ab (2.4:1, stylesheet-only) is now fixed — the case the old code could
 
 
 print("")
-print("[10] the four-source fixture (templates/demo_all_sources.html)")
+print("[10] the four-source fixture (tests/fixtures/demo_all_sources.html)")
 
-FIXTURE_URL = "http://example.com/templates/demo_all_sources.html"
-_fixture_css = open(os.path.join(ROOT, "templates", "demo_theme.css"), encoding="utf-8").read()
+FIXTURE_URL = "http://example.com/tests/fixtures/demo_all_sources.html"
+_fixture_css = open(os.path.join(ROOT, "tests", "fixtures", "demo_theme.css"), encoding="utf-8").read()
 
 
 def fixture_fetch(url, timeout=None, max_bytes=None):
@@ -407,7 +407,7 @@ def fixture_fetch(url, timeout=None, max_bytes=None):
 wc.nethttp.get = fixture_fetch
 _stub.suggest_reply = None                      # deterministic path only
 
-with open(os.path.join(ROOT, "templates", "demo_all_sources.html"), encoding="utf-8") as fh:
+with open(os.path.join(ROOT, "tests", "fixtures", "demo_all_sources.html"), encoding="utf-8") as fh:
     fixture = soup_of(fh.read())
 fixture_issues = wc.ChangeColor(FIXTURE_URL, fixture)
 by_source = {}
@@ -432,7 +432,7 @@ check("fixture: no inline style added to <body> (cascade preserved)",
 check("fixture: external sheet inlined",
       fixture.find("link", rel="stylesheet") is None)
 check("fixture: url() absolutised against the SHEET",
-      "http://example.com/templates/img/hero.png" in str(fixture),
+      "http://example.com/tests/fixtures/img/hero.png" in str(fixture),
       "url() not rewritten")
 
 print("\n" + "=" * 62)
