@@ -111,7 +111,19 @@ check("a host that will not resolve is refused",
 nethttp.socket.getaddrinfo = _real_getaddrinfo
 
 
-print("\n[5] redirects are re-checked at every hop")
+print("\n[5] the local-development escape hatch")
+
+_resolve_map["localhost"] = "127.0.0.1"
+os.environ[nethttp.ALLOW_PRIVATE_ENV] = "1"
+check("opting in allows a private host", not blocked("http://localhost:8791/x"))
+check("...and it is still not a free pass on the scheme",
+      blocked("file:///etc/passwd"))
+os.environ.pop(nethttp.ALLOW_PRIVATE_ENV)
+check("without it, the same host is refused again",
+      blocked("http://localhost:8791/x"))
+
+
+print("\n[6] redirects are re-checked at every hop")
 
 
 class FakeResponse:
@@ -179,7 +191,7 @@ check("a relative Location is resolved against the current URL",
       _requested[-1][0] == "http://example.com/landed", _requested)
 check("the final body is returned", result.content == b"ok", result.content)
 
-print("\n[6] timeout and size cap")
+print("\n[7] timeout and size cap")
 
 _requested.clear()
 _chain = {}

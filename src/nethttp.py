@@ -15,12 +15,19 @@ case that matters for a deployment anyone can type a URL into.
 """
 
 import ipaddress
+import os
 import socket
 from urllib.parse import urljoin, urlparse
 
 import requests
 
 ALLOWED_SCHEMES = {"http", "https"}
+# Opt-in escape hatch for local work: the test suite and `python -m
+# src.webScraper` both point at a fixture server on localhost, which is exactly
+# what the guard exists to refuse. Read per call, not at import, so a test can
+# turn it on and off. Never set this on a deployment -- it disables the SSRF
+# check outright. Same shape as the FLASK_DEBUG opt-in in app.py.
+ALLOW_PRIVATE_ENV = "ACCESSAI_ALLOW_PRIVATE_HOSTS"
 DEFAULT_TIMEOUT = (5, 15)       # (connect, read) -- a host that accepts and
                                 # never answers must not pin a worker forever
 MAX_BYTES = 5_000_000
@@ -31,6 +38,10 @@ class BlockedURL(ValueError):
     """The URL resolves somewhere we refuse to fetch from."""
 
 
+def private_hosts_allowed():
+    return os.environ.get(ALLOW_PRIVATE_ENV, "").lower() in ("1", "true", "yes")
+
+
 def _resolves_public(host):
     """Refuse a host that resolves to anything but a public address.
 
@@ -38,6 +49,8 @@ def _resolves_public(host):
     with both a public and a loopback record would otherwise pass here and
     connect to the loopback one.
     """
+    if private_hosts_allowed():
+        return
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:

@@ -20,6 +20,7 @@ import cssutils
 import requests
 from PIL import ImageColor
 
+from . import nethttp
 from .gemini import suggest_text_color
 
 cssutils.log.setLevel(logging.CRITICAL)   # cssutils is extremely noisy on real-world CSS
@@ -451,12 +452,13 @@ def fix_linked_stylesheets(soup, page_url, report, threshold=WCAG_AA_NORMAL):
 
         sheet_url = urljoin(page_url, href)        # the per-sheet base
         try:
-            response = requests.get(sheet_url, timeout=SHEET_TIMEOUT)
+            response = nethttp.get(sheet_url, timeout=SHEET_TIMEOUT,
+                                   max_bytes=MAX_SHEET_BYTES)
             response.raise_for_status()
-        except requests.RequestException as exc:
+        except (requests.RequestException, nethttp.BlockedURL) as exc:
+            # A sheet we cannot fetch, or are not allowed to, is not a failure:
+            # leave the <link> alone and let the browser try it itself.
             print(f"skipping stylesheet {sheet_url}: {exc}")
-            continue                                # leave the <link> intact
-        if len(response.content) > MAX_SHEET_BYTES:
             continue
 
         css, changed = fix_stylesheet(

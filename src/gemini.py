@@ -1,9 +1,15 @@
 import google.generativeai as genai
 import PIL.Image
-import requests, io, os
+import io, os
 from dotenv import load_dotenv
 
-from . import PROJECT_ROOT
+from . import PROJECT_ROOT, nethttp
+
+# Images come from whatever page the user pointed us at, so a 10KB file that
+# decodes to gigabytes is a fetch away. Pillow only warns past its own default;
+# this makes an oversized image refuse to decode instead.
+PIL.Image.MAX_IMAGE_PIXELS = 40_000_000     # ~8000x5000
+MAX_IMAGE_BYTES = 8_000_000
 
 # The key file lives at the project root, beside app.py -- resolve it
 # absolutely so the working directory does not matter.
@@ -13,13 +19,20 @@ model = genai.GenerativeModel("gemini-1.5-flash")
 
 def getAlt(src):
     try:
-        response = requests.get(src)
-        image = PIL.Image.open(io.BytesIO(response.content))
-        
+        response = nethttp.get(src, max_bytes=MAX_IMAGE_BYTES)
+        if not response.headers.get("content-type", "").lower().startswith("image/"):
+            return "Image description not available"
+
+        data = response.content
+        # verify() consumes the file object, so the image has to be reopened
+        # before it can actually be read -- that is Pillow's API, not a slip.
+        PIL.Image.open(io.BytesIO(data)).verify()
+        image = PIL.Image.open(io.BytesIO(data))
+
         response = model.generate_content(["Give alt for this image in less than five words in square brackets", image])
-        
+
         return response.text.split("[")[1].split("]")[0]
-        
+
     except Exception as e:
         return "Image description not available"
 

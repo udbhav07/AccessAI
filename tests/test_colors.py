@@ -232,7 +232,7 @@ class FakeResponse:
 fetched = []
 
 
-def fake_get(url, timeout=None):
+def fake_get(url, timeout=None, max_bytes=None):
     fetched.append(url)
     if url.endswith("bad.css"):
         return FakeResponse("#ab{background-color:aqua;color:cadetblue}"
@@ -242,7 +242,7 @@ def fake_get(url, timeout=None):
     raise wc.requests.RequestException("404")
 
 
-wc.requests.get = fake_get
+wc.nethttp.get = fake_get
 
 wc.reset_budget()
 report, fetched[:] = [], []
@@ -274,11 +274,11 @@ print("\n[9] ChangeColor end-to-end on the demo fixture")
 wc.reset_budget()
 
 
-def fixture_get(url, timeout=None):
+def fixture_get(url, timeout=None, max_bytes=None):
     return FakeResponse("#ab{background-color:aqua;color:cadetblue}")
 
 
-wc.requests.get = fixture_get
+wc.nethttp.get = fixture_get
 
 demo = """<html><head>
 <link rel="stylesheet" href="demostyles.css">
@@ -312,13 +312,13 @@ FIXTURE_URL = "http://example.com/templates/demo_all_sources.html"
 _fixture_css = open(os.path.join(ROOT, "templates", "demo_theme.css"), encoding="utf-8").read()
 
 
-def fixture_fetch(url, timeout=None):
+def fixture_fetch(url, timeout=None, max_bytes=None):
     if url.endswith("demo_theme.css"):
         return FakeResponse(_fixture_css)
     raise wc.requests.RequestException("404")
 
 
-wc.requests.get = fixture_fetch
+wc.nethttp.get = fixture_fetch
 wc.reset_budget()
 _stub.suggest_reply = None                      # deterministic path only
 

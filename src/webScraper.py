@@ -1,8 +1,8 @@
-import requests
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+from . import nethttp
 from .gemini import getAlt, getLabel
 from .webColorss import ChangeColor
 
@@ -58,7 +58,7 @@ class Scraper:
         fixes themselves -- not by asset resolution or missing stamps.
         """
         issues = []
-        req = requests.get(url)
+        req = nethttp.get(url)
         self.soup = BeautifulSoup(req.text, 'html.parser')
         self.url = req.url          # post-redirect, so relative paths resolve correctly
         self.html = req.text

@@ -28,7 +28,7 @@ sys.modules["src.gemini"] = _stub
 sys.modules["gemini"] = _stub
 
 from bs4 import BeautifulSoup                                      # noqa: E402
-from src import runstore, verifier                                 # noqa: E402
+from src import nethttp, runstore, verifier                        # noqa: E402
 from src.webScraper import Scraper, stamp_ids, strip_ids           # noqa: E402
 
 PORT = 8791
@@ -37,6 +37,10 @@ PORT = 8791
 # renders at 16px without alt text but expands to fit it once alt is added,
 # which is a real (but fixture-induced) layout change.
 BASE = f"http://localhost:{PORT}/templates"
+
+# The fixture server is on localhost, which is exactly what nethttp refuses.
+# Opt in for the duration of the suite.
+os.environ[nethttp.ALLOW_PRIVATE_ENV] = "1"
 PASSED, FAILED = 0, 0
 
 
