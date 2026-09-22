@@ -219,13 +219,40 @@ def _inline_decl(node):
         return None
 
 
-def _effective_background(el):
+def document_has_stylesheets(soup):
+    """Does this document carry colour we cannot see from here?
+
+    The ancestor walks below read inline styles and legacy attributes only.
+    If the page also has a <style> block or a linked sheet, a walk that finds
+    nothing has not established that the element is unstyled -- it has only
+    established that the answer is somewhere we did not look.
+    """
+    if soup is None:
+        return False
+    if soup.find("style") is not None:
+        return True
+    for link in soup.find_all("link"):
+        rel = link.get("rel") or []
+        if isinstance(rel, str):
+            rel = rel.split()
+        if "stylesheet" in [str(r).lower() for r in rel]:
+            return True
+    return False
+
+
+def _effective_background(el, stylesheets_present=False):
     """Nearest painted background on the element or one of its ancestors.
 
     ``background-color`` does not inherit, so an element with no background of
     its own shows whatever its nearest painted ancestor paints. Without this
     walk, ``<div style="background:black"><h2>x</h2></div>`` is unjudgeable.
-    Returns ``(raw_value, rgb)``, falling back to the browser's white canvas.
+    Returns ``(raw_value, rgb)``.
+
+    The fallback is the browser's white canvas -- but only when the document
+    has no stylesheet. Assuming white on a page whose theme is set in CSS is
+    how a dark page gets its text pushed *darker*: the ratio is computed
+    against a colour that is not on screen. When there is CSS we cannot read,
+    this returns ``(None, None)`` and the caller must abstain.
     """
     node = el
     while node is not None:
@@ -240,11 +267,17 @@ def _effective_background(el):
         if rgb:
             return raw, rgb
         node = node.parent
+    if stylesheets_present:
+        return None, None
     return None, CANVAS_BACKGROUND
 
 
-def _effective_foreground(el):
-    """Nearest inherited text colour; a browser's default is black."""
+def _effective_foreground(el, stylesheets_present=False):
+    """Nearest inherited text colour; a browser's default is black.
+
+    Abstains for the same reason as _effective_background: a stylesheet we
+    cannot read may be setting it.
+    """
     node = el
     while node is not None:
         decl = _inline_decl(node)
@@ -254,6 +287,8 @@ def _effective_foreground(el):
             if rgb:
                 return raw, rgb
         node = node.parent
+    if stylesheets_present:
+        return None, None
     return None, DEFAULT_TEXT
 
 
@@ -270,6 +305,32 @@ def _record(report, source, target, old, new, before, after, ids=()):
         "ratio_before": round(before, 2) if before is not None else None,
         "ratio_after": round(after, 2) if after is not None else None,
         "ids": [i for i in ids if i],
+    })
+
+
+def _record_abstention(report, target, reason, element=None):
+    """Note an element we deliberately did not judge.
+
+    A separate type so callers can filter: these carry no colour and no ratio,
+    because the point of the entry is that we declined to guess one.
+
+    `ids` stays empty and the element goes in its own field. `ids` feeds the
+    verifier's `modified_ids`, which means "elements this run changed on
+    purpose" and exempts them from the layout, colour and pixel checks -- so
+    listing an untouched element there would suppress exactly the regressions
+    those checks exist to catch.
+    """
+    report.append({
+        "type": "contrast-skipped",
+        "source": "unresolvable",
+        "target": target,
+        "old": None,
+        "new": None,
+        "ratio_before": None,
+        "ratio_after": None,
+        "reason": reason,
+        "element": element,
+        "ids": [],
     })
 
 
@@ -297,6 +358,8 @@ def fix_inline_styles(soup, report, threshold=WCAG_AA_NORMAL):
     Only the ``color`` property is touched; every other declaration on the
     element is preserved exactly as written.
     """
+    unreadable_css = document_has_stylesheets(soup)
+
     for el in soup.find_all(style=True):
         decl = _inline_decl(el)
         if decl is None:
@@ -310,12 +373,19 @@ def fix_inline_styles(soup, report, threshold=WCAG_AA_NORMAL):
         if resolve_color(own_fg):
             fg_raw, fg_rgb = own_fg, resolve_color(own_fg)
         else:
-            fg_raw, fg_rgb = _effective_foreground(el)
+            fg_raw, fg_rgb = _effective_foreground(el, unreadable_css)
 
         if resolve_color(own_bg):
             bg_raw, bg_rgb = own_bg, resolve_color(own_bg)
         else:
-            bg_raw, bg_rgb = _effective_background(el)
+            bg_raw, bg_rgb = _effective_background(el, unreadable_css)
+
+        if fg_rgb is None or bg_rgb is None:
+            _record_abstention(
+                report, el.name,
+                "colour comes from a stylesheet this pass cannot read",
+                element=el.get(ID_ATTR))
+            continue
 
         before = _ratio(_relative_luminance(fg_rgb), _relative_luminance(bg_rgb))
         if before >= threshold:
@@ -353,15 +423,26 @@ def fix_presentational_attributes(soup, report, threshold=WCAG_AA_NORMAL):
     so converting would silently promote them above any stylesheet that was
     overriding them, visibly changing the page.
     """
+    unreadable_css = document_has_stylesheets(soup)
+
     for tag, attrs in _PRESENTATIONAL_PAIRS.items():
         for el in soup.find_all(tag):
-            bg_raw, bg_rgb = _effective_background(el)
-            bg_key = bg_raw or _to_hex(bg_rgb)
+            bg_raw, bg_rgb = _effective_background(el, unreadable_css)
             for attr in attrs:
                 fg_raw = el.get(attr)
                 fg_rgb = resolve_color(fg_raw)
                 if fg_rgb is None:
                     continue
+                if bg_rgb is None:
+                    # Only worth reporting for an element that actually
+                    # carries a colour attribute -- an untouched <body> is
+                    # not an abstention, it is a non-event.
+                    _record_abstention(
+                        report, f"{tag}[{attr}]",
+                        "background comes from a stylesheet this pass cannot read",
+                        element=el.get(ID_ATTR))
+                    continue
+                bg_key = bg_raw or _to_hex(bg_rgb)
                 before = _ratio(_relative_luminance(fg_rgb), _relative_luminance(bg_rgb))
                 if before >= threshold:
                     continue

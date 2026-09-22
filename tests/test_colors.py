@@ -175,6 +175,43 @@ s = soup_of('<p style="padding:4px">no colours</p>')
 wc.fix_inline_styles(s, report)
 check("element with no colour declarations is skipped", report == [])
 
+print("\n[5b] abstaining instead of assuming a white canvas")
+
+wc.reset_budget()
+report = []
+# The theme is in a stylesheet this pass cannot read. Guessing white here is
+# what made the fixer push text on a dark page *darker*.
+s = soup_of('<html><head><style>body{background:#000}</style></head>'
+            '<body><p style="color:#333">dim</p></body></html>')
+wc.fix_inline_styles(s, report)
+colour = wc.cssutils.parseStyle(s.find("p")["style"]).getPropertyValue("color")
+check("the element is left alone rather than darkened",
+      colour.lower() in ("#333", "#333333"), colour)
+check("...and the abstention is reported, not silent",
+      any(e["type"] == "contrast-skipped" for e in report), report)
+
+report = []
+s = soup_of('<html><head><link rel="stylesheet" href="t.css"></head>'
+            '<body><p style="color:#333">dim</p></body></html>')
+wc.fix_inline_styles(s, report)
+check("a linked sheet counts as unreadable too",
+      any(e["type"] == "contrast-skipped" for e in report), report)
+
+report = []
+s = soup_of('<html><body><p style="color:#eee">pale</p></body></html>')
+wc.fix_inline_styles(s, report)
+check("with no stylesheet at all, the white canvas is still assumed",
+      any(e["type"] == "contrast" for e in report), report)
+
+check("document_has_stylesheets sees a <style> block",
+      wc.document_has_stylesheets(soup_of("<style>p{color:red}</style>")))
+check("...and a linked stylesheet",
+      wc.document_has_stylesheets(soup_of('<link rel="stylesheet" href="a.css">')))
+check("...but not a favicon",
+      not wc.document_has_stylesheets(soup_of('<link rel="icon" href="f.ico">')))
+check("...and not a bare document",
+      not wc.document_has_stylesheets(soup_of("<p>hi</p>")))
+
 print("\n[6] presentational attributes")
 
 report = []
@@ -292,15 +329,18 @@ demo = """<html><head>
 s = soup_of(demo)
 issues = wc.ChangeColor("http://localhost:8000/experiment.html", s)
 sources = {e["source"] for e in issues}
+# Abstentions carry no colour and no ratio on purpose, so the assertions
+# about emitted colours are about the fixes only.
+fixes = [e for e in issues if e["type"] == "contrast"]
 
 check("returned a real report (was always [] before)", len(issues) >= 3, len(issues))
 check("inline failures detected", "inline" in sources, sources)
 check("stylesheet failure detected", "stylesheet" in sources, sources)
 check("every emitted colour passes 4.5:1",
-      all((e["ratio_after"] or 0) >= 4.5 for e in issues),
-      [(e["target"], e["ratio_after"]) for e in issues])
+      all((e["ratio_after"] or 0) >= 4.5 for e in fixes),
+      [(e["target"], e["ratio_after"]) for e in fixes])
 check("every fix was a genuine improvement",
-      all(e["ratio_after"] > e["ratio_before"] for e in issues))
+      all(e["ratio_after"] > e["ratio_before"] for e in fixes))
 check("#ab (2.4:1, stylesheet-only) is now fixed — the case the old code could never see",
       any(e["target"] == "#ab" for e in issues), [e["target"] for e in issues])
 

@@ -451,13 +451,24 @@ def check_coverage(soup_before, soup_after):
 
 # --- Phase 4: check C -------------------------------------------------------
 
-def check_contrast_goal(snap_before, snap_after):
-    """Did the remediation reach its objective?
+def check_contrast_goal(snap_before, snap_after, modified_ids=()):
+    """Did the remediation reach the objective it set for itself?
 
-    This is a regression test on the *goal*, not on side effects -- nothing
-    else in the pipeline verifies that contrast actually cleared the
-    threshold.
+    Two different questions used to be answered here, and conflating them made
+    the answer useless. "Did the colours we changed come out right?" is a
+    regression test we can pass or fail. "Is this page now fully compliant?"
+    is not -- the fixers deliberately decline whole categories (a stylesheet
+    rule with only one half of the pair declared, an element whose colour
+    comes from CSS the inline pass cannot read), so judging every element on
+    the page means reporting INCOMPLETE forever, for work never claimed, and
+    burying the one signal that is always our fault: a colour that got worse.
+
+    So this covers the elements the fixer touched, plus their descendants
+    because colour inherits -- and regressions anywhere, which are ours
+    whether we aimed at them or not. Everything else goes to
+    `check_remaining_contrast`, which reports without failing.
     """
+    targeted = _with_descendants(set(modified_ids or ()), snap_after)
     before = _by_id(snap_before)
     checked, failures, regressions = 0, [], []
 
@@ -467,19 +478,22 @@ def check_contrast_goal(snap_before, snap_after):
         ratio_after = check_contrast(snap.fg, snap.bg)
         if ratio_after is None:
             continue
-        checked += 1
         threshold = _threshold_for(snap)
 
         b = before.get(snap.id)
         ratio_before = check_contrast(b.fg, b.bg) if b else None
 
-        if ratio_after < threshold:
-            was = f"{ratio_before:.1f}" if ratio_before is not None else "?"
-            failures.append(
-                f"{snap.tag.lower()}#{snap.id} ({was}->{ratio_after:.1f}, "
-                f"needs {threshold})"
-            )
-        elif ratio_before is not None and ratio_after < ratio_before - 0.05:
+        if snap.id in targeted:
+            checked += 1
+            if ratio_after < threshold:
+                was = f"{ratio_before:.1f}" if ratio_before is not None else "?"
+                failures.append(
+                    f"{snap.tag.lower()}#{snap.id} ({was}->{ratio_after:.1f}, "
+                    f"needs {threshold})"
+                )
+                continue
+
+        if ratio_before is not None and ratio_after < ratio_before - 0.05:
             regressions.append(
                 f"{snap.tag.lower()}#{snap.id} got worse "
                 f"({ratio_before:.1f}->{ratio_after:.1f})"
@@ -488,15 +502,47 @@ def check_contrast_goal(snap_before, snap_after):
     problems = failures + regressions
     passed = not problems
     if passed:
-        summary = f"all {checked} text elements meet their threshold"
+        summary = (f"all {checked} remediated text elements meet their threshold"
+                   if checked else "no contrast changes to verify")
     else:
         parts = []
         if failures:
-            parts.append(f"{len(failures)} still below threshold")
+            parts.append(f"{len(failures)} of {checked} still below threshold")
         if regressions:
             parts.append(f"{len(regressions)} got worse")
         summary = f"{' and '.join(parts)}  -> {_summarise(problems)}"
     return CheckResult("Contrast", passed, summary, problems, "objective")
+
+
+def check_remaining_contrast(snap_after, modified_ids=()):
+    """What is still below threshold that this run did not reach.
+
+    Reported, never failed: these are not defects the run introduced, they are
+    the work left over -- the list a human needs in order to finish the job.
+    Failing on them would make every real page report INCOMPLETE and would say
+    nothing about whether the run itself went well.
+    """
+    targeted = _with_descendants(set(modified_ids or ()), snap_after)
+    remaining = []
+
+    for snap in snap_after:
+        if snap.id is None or snap.id in targeted:
+            continue
+        if not snap.visible or not snap.has_text:
+            continue
+        ratio = check_contrast(snap.fg, snap.bg)
+        if ratio is None:
+            continue
+        threshold = _threshold_for(snap)
+        if ratio < threshold:
+            remaining.append(
+                f"{snap.tag.lower()}#{snap.id} {ratio:.1f}:1 (needs {threshold})"
+            )
+
+    summary = ("nothing left below threshold" if not remaining
+               else f"{len(remaining)} element(s) still below threshold, "
+                    f"not reached by this run  -> {_summarise(remaining)}")
+    return CheckResult("Remaining", True, summary, remaining, "advisory")
 
 
 # --- Phase 5: check D -------------------------------------------------------
@@ -643,9 +689,10 @@ def run_checks(url, html_before, html_after, modified_ids=()):
     report.checks = [
         layout,
         check_visibility(snap_before, snap_after),
-        check_contrast_goal(snap_before, snap_after),
+        check_contrast_goal(snap_before, snap_after, modified_ids),
         check_colour(snap_before, snap_after, modified_ids),
         coverage,
+        check_remaining_contrast(snap_after, modified_ids),
         check_pixels(snap_before, snap_after, shot_before, shot_after,
                      modified_ids, layout_failed_ids),
     ]

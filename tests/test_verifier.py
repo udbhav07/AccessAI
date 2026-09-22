@@ -140,7 +140,7 @@ try:
     print("\n" + report.as_text() + "\n")
 
     check("capture succeeded", report.error is None, report.error)
-    check("all six checks ran", len(report.checks) == 6,
+    check("all seven checks ran", len(report.checks) == 7,
           [c.name for c in report.checks])
 
     cov = named(report, "Coverage")
@@ -159,6 +159,14 @@ try:
           named(report, "Colour").summary)
     check("contrast passes now that COLOR_FIX_PLAN landed",
           named(report, "Contrast").passed, named(report, "Contrast").summary)
+    # line-2 declares a black background inline and takes its text colour from
+    # demostyles.css, which the inline pass cannot read -- so the fixer
+    # abstains. That belongs on the leftover list, not in the verdict.
+    rem = named(report, "Remaining")
+    check("what the fixer could not reach is listed, not failed",
+          rem.passed and rem.details, rem.summary)
+    check("...and it is advisory, so the verdict stays PASS",
+          rem.tier == "advisory" and report.verdict == "PASS", report.verdict)
     check("pixels within tolerance", named(report, "Pixels").passed,
           named(report, "Pixels").summary)
     check("overall verdict is PASS", report.verdict == "PASS", report.verdict)
@@ -230,6 +238,30 @@ try:
     r = verify(stamped(base_html), broken, modified_ids=[])
     check("C fails on a contrast regression", not named(r, "Contrast").passed,
           named(r, "Contrast").summary)
+    # A regression is ours whether we aimed at that element or not, so it
+    # still fails even with nothing declared as modified.
+    check("...even though nothing was declared modified",
+          any("got worse" in d for d in named(r, "Contrast").details),
+          named(r, "Contrast").details)
+
+    # C: a pre-existing failure we never claimed is not our failure
+    pre_existing = stamped(
+        '<html><body><p id="bad" style="color:#777;background:#888">dim</p>'
+        '</body></html>')
+    r = verify(stamped(str(pre_existing)), pre_existing, modified_ids=[])
+    check("an untouched pre-existing failure does not fail the run",
+          named(r, "Contrast").passed, named(r, "Contrast").summary)
+    check("...it is reported as remaining work instead",
+          named(r, "Remaining").details, named(r, "Remaining").summary)
+    check("...so the verdict is PASS, not INCOMPLETE", r.verdict == "PASS", r.verdict)
+
+    # C: a failure we DID claim to fix is still a failure
+    claimed = stamped(
+        '<html><body><p style="color:#777;background:#888">dim</p></body></html>')
+    target_id = claimed.find("p").get("data-aai-id")
+    r = verify(stamped(str(claimed)), claimed, modified_ids=[target_id])
+    check("a claimed element that still fails is reported",
+          not named(r, "Contrast").passed, named(r, "Contrast").summary)
 
     # E: strip an alt attribute
     before_soup = stamped(base_html)
