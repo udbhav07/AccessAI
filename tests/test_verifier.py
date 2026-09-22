@@ -387,8 +387,24 @@ try:
     broken = stamped(base_html)
     broken.find("h1")["style"] = "width:80px;display:block"
     r = verify(stamped(base_html), broken)
-    check("A fails when a width changes", not named(r, "Layout").passed,
-          named(r, "Layout").summary)
+    layout = named(r, "Layout")
+    check("A fails when a width changes", not layout.passed, layout.summary)
+    check("...and carries the failing ids as data, not as parsed prose",
+          layout.element_ids and all(i.isdigit() for i in layout.element_ids),
+          layout.element_ids)
+    check("...matching the ids named in the details",
+          layout.element_ids == {d.split("#")[1].split(" ")[0]
+                                 for d in layout.details if "#" in d},
+          (layout.element_ids, layout.details))
+
+    # A: both dimensions at once must report both, not just the first
+    broken = stamped(base_html)
+    broken.find("h1")["style"] = "width:80px;height:200px;display:block"
+    r = verify(stamped(base_html), broken)
+    details = named(r, "Layout").details
+    check("a width AND height change reports both",
+          any("width" in d for d in details) and any("height" in d for d in details),
+          details)
 
     # D: recolour something not in modified_ids
     broken = stamped(base_html)

@@ -110,6 +110,13 @@ class CheckResult:
     summary: str
     details: list = field(default_factory=list)
     tier: str = "blocking"        # blocking | objective | advisory
+    # Ids of the elements this check FAILED on. Carried as data because
+    # run_checks needs them: the pixel pass has to skip anything the layout
+    # pass already flagged. They used to be parsed back out of the formatted
+    # strings in `details`, which meant a reworded message silently changed
+    # what the pixel pass compared, with nothing to catch it. Warnings stay
+    # out -- an element that only shifted sideways is still worth comparing.
+    element_ids: set = field(default_factory=set)
 
 
 @dataclass
@@ -370,17 +377,26 @@ def check_layout(snap_before, snap_after, modified_ids=()):
     modified = set(modified_ids or ())
     exempt_height = _insertion_ancestors(snap_after) | _ancestors_of(modified, snap_after)
 
-    checked, failures, warnings = 0, [], []
+    checked, failures, warnings, failed_ids = 0, [], [], set()
     for eid, b in before.items():
         a = after.get(eid)
         if a is None or not (b.visible and a.visible) or eid in modified:
             continue
         checked += 1
+
+        # Independent, not a chain: an element that changed in both width and
+        # height should say so. The detail list exists to be diagnosed from,
+        # and reporting only the first thing found is what makes it useless
+        # exactly when there is most to explain.
         if abs(a.w - b.w) > GEOMETRY_TOLERANCE:
             failures.append(f"{b.tag.lower()}#{eid} width {b.w:.0f}->{a.w:.0f}px")
-        elif abs(a.h - b.h) > GEOMETRY_TOLERANCE and eid not in exempt_height:
+            failed_ids.add(eid)
+        if abs(a.h - b.h) > GEOMETRY_TOLERANCE and eid not in exempt_height:
             failures.append(f"{b.tag.lower()}#{eid} height {b.h:.0f}->{a.h:.0f}px")
-        elif abs(a.x - b.x) > GEOMETRY_TOLERANCE:
+            failed_ids.add(eid)
+        if abs(a.x - b.x) > GEOMETRY_TOLERANCE and eid not in failed_ids:
+            # Only worth saying when the size held: a resized element has
+            # moved by definition.
             warnings.append(f"{b.tag.lower()}#{eid} x {b.x:.0f}->{a.x:.0f}px")
 
     passed = not failures
@@ -389,8 +405,10 @@ def check_layout(snap_before, snap_after, modified_ids=()):
         if warnings:
             summary += f" ({len(warnings)} shifted horizontally)"
     else:
-        summary = f"{len(failures)} of {checked} elements changed size  -> {_summarise(failures)}"
-    return CheckResult("Layout", passed, summary, failures + warnings, "blocking")
+        summary = (f"{len(failed_ids)} of {checked} elements changed size  "
+                   f"-> {_summarise(failures)}")
+    return CheckResult("Layout", passed, summary, failures + warnings, "blocking",
+                       failed_ids)
 
 
 def check_visibility(snap_before, snap_after):
@@ -545,7 +563,7 @@ def check_colour(snap_before, snap_after, modified_ids):
     """
     excluded = _with_descendants(set(modified_ids or ()), snap_after)
     before = _by_id(snap_before)
-    checked, changes = 0, []
+    checked, changes, changed_ids = 0, [], set()
 
     for snap in snap_after:
         if snap.id is None or snap.id in excluded or snap.is_new:
@@ -554,16 +572,20 @@ def check_colour(snap_before, snap_after, modified_ids):
         if b is None or not (b.visible and snap.visible):
             continue
         checked += 1
+        # Both, not either: an element whose foreground and background both
+        # moved is a bigger clue than one that only lost its colour.
         if b.fg != snap.fg:
             changes.append(f"{snap.tag.lower()}#{snap.id} colour {b.fg}->{snap.fg}")
-        elif b.bg != snap.bg:
+            changed_ids.add(snap.id)
+        if b.bg != snap.bg:
             changes.append(f"{snap.tag.lower()}#{snap.id} background {b.bg}->{snap.bg}")
+            changed_ids.add(snap.id)
 
     passed = not changes
     summary = ("no unintended colour changes" if passed
-               else f"{len(changes)} of {checked} untouched elements changed  "
+               else f"{len(changed_ids)} of {checked} untouched elements changed  "
                     f"-> {_summarise(changes)}")
-    return CheckResult("Colour", passed, summary, changes, "blocking")
+    return CheckResult("Colour", passed, summary, changes, "blocking", changed_ids)
 
 
 # --- Phase 6: check F -------------------------------------------------------
@@ -621,7 +643,16 @@ def check_pixels(snap_before, snap_after, shot_before, shot_after, modified_ids,
         if crop_a is None or crop_b is None:
             continue
         if crop_a.size != crop_b.size:
-            crop_a = crop_a.resize(crop_b.size)
+            # Compare the overlap rather than resampling. A resize invents
+            # differences that are artefacts of the interpolation, and can
+            # equally blur a real one away. A size change here also means the
+            # layout check should already have caught it, so it is worth
+            # naming rather than smoothing over.
+            width = min(crop_a.width, crop_b.width)
+            height = min(crop_a.height, crop_b.height)
+            crop_a = crop_a.crop((0, 0, width, height))
+            crop_b = crop_b.crop((0, 0, width, height))
+            offenders.append(f"{snap.tag.lower()}#{snap.id} crop size changed")
 
         # float32 first: uint8 arithmetic wraps, so 10 - 200 would give 66
         arr_b = np.asarray(crop_b, dtype=np.float32)
@@ -671,10 +702,6 @@ def run_checks(url, html_before, html_after, modified_ids=()):
         return report
 
     layout = check_layout(snap_before, snap_after, modified_ids)
-    layout_failed_ids = {
-        part.split("#")[1].split(" ")[0]
-        for part in layout.details if "#" in part
-    }
 
     report.checks = [
         layout,
@@ -684,6 +711,6 @@ def run_checks(url, html_before, html_after, modified_ids=()):
         coverage,
         check_remaining_contrast(snap_after, modified_ids),
         check_pixels(snap_before, snap_after, shot_before, shot_after,
-                     modified_ids, layout_failed_ids),
+                     modified_ids, layout.element_ids),
     ]
     return report
