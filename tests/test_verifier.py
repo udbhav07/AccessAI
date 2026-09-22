@@ -28,7 +28,7 @@ sys.modules["src.gemini"] = _stub
 sys.modules["gemini"] = _stub
 
 from bs4 import BeautifulSoup                                      # noqa: E402
-from src import nethttp, runstore, verifier, webScraper            # noqa: E402
+from src import a11y, nethttp, runstore, verifier, webScraper     # noqa: E402
 from src.webScraper import Scraper, stamp_ids, strip_ids           # noqa: E402
 
 PORT = 8791
@@ -120,6 +120,69 @@ small = S("9", None, False, "P", 0, 0, 9, 9, "", "", 16, 400, True, True)
 check("large text uses the 3:1 threshold", verifier._threshold_for(big) == 3.0)
 check("bold 19px uses 3:1", verifier._threshold_for(bold) == 3.0)
 check("normal text uses 4.5:1", verifier._threshold_for(small) == 4.5)
+
+print("\n[3b] labelling: one definition for the scraper and the verifier")
+
+
+def labelled_soup(html):
+    soup = BeautifulSoup(html, "html.parser")
+    stamp_ids(soup)
+    scraper = Scraper()
+    scraper.soup = soup
+    scraper.url = "http://example.com/"
+    return soup, scraper
+
+
+def strategy_for(html):
+    soup = BeautifulSoup(html, "html.parser")
+    return a11y.labelling_strategy(soup, soup.find("input"))
+
+
+for label, html, expected in [
+    ("a wrapped input is already named", "<label>Email <input></label>", None),
+    ("a hidden input is never labelled", '<input type="hidden" name="csrf">', None),
+    ("a submit button is never labelled", '<input type="submit" value="Go">', None),
+    ("a reset button is never labelled", '<input type="reset">', None),
+    ("an input with an id uses <label for>", '<input id="e">', "for"),
+    ("an input without one uses aria-label", '<input placeholder="Email">', "aria"),
+    ("an existing aria-label is left alone", '<input aria-label="Email">', None),
+    ("an unknown type still counts as text", '<input type="box">', "aria"),
+]:
+    got = strategy_for(html)
+    check(label, got == expected, f"got {got!r}, wanted {expected!r}")
+
+soup, scraper = labelled_soup(
+    '<form><input name="email" placeholder="Email"></form>')
+issues = scraper.get_label()
+inp = soup.find("input")
+check("an input with no id now gets a name", inp.get("aria-label") == "Stub Label",
+      inp.attrs)
+check("...with no node inserted, so nothing can move",
+      soup.find("label") is None and soup.find("br") is None, str(soup))
+check("...and it is reported", any(i["source"] == "aria-label" for i in issues), issues)
+
+soup, scraper = labelled_soup('<label>Email <input name="e"></label>')
+before = str(soup)
+issues = scraper.get_label()
+check("a wrapped input is not given a second label",
+      len(soup.find_all("label")) == 1, str(soup))
+check("...and nothing is reported for it", issues == [], issues)
+
+soup, scraper = labelled_soup(
+    '<form><input type="hidden" name="csrf" value="x">'
+    '<input type="submit" value="Go"></form>')
+issues = scraper.get_label()
+check("hidden and submit inputs are skipped",
+      issues == [] and soup.find("label") is None, issues)
+
+soup, _ = labelled_soup(
+    '<form><input aria-label="Email"><input type="hidden"></form>')
+check("coverage counts aria-label and ignores hidden fields",
+      verifier._label_coverage(soup) == (1, 1), verifier._label_coverage(soup))
+
+soup, _ = labelled_soup("<label>Email <input></label>")
+check("coverage counts a wrapping label",
+      verifier._label_coverage(soup) == (1, 1), verifier._label_coverage(soup))
 
 print("\n[4] live capture on the demo fixture (real browser)")
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from PIL import Image
 
+from . import a11y
 from .webColorss import check_contrast
 
 VIEWPORT = {"width": 1280, "height": 720}
@@ -410,20 +411,9 @@ def check_visibility(snap_before, snap_after):
 
 
 def _label_coverage(soup):
-    inputs = [i for i in soup.find_all("input")
-              if (i.get("type") or "text").lower() not in
-              ("hidden", "submit", "button", "reset", "image")]
-    labelled = 0
-    for inp in inputs:
-        if inp.find_parent("label") is not None:
-            labelled += 1
-        elif inp.get("aria-label") or inp.get("aria-labelledby"):
-            labelled += 1
-        elif inp.get("id"):
-            match = soup.find("label", attrs={"for": inp["id"]})
-            if match is not None and match.get_text(strip=True):
-                labelled += 1
-    return labelled, len(inputs)
+    """Counted with the same rules the scraper fixes by -- see src/a11y.py."""
+    inputs = [i for i in soup.find_all("input") if a11y.needs_label(i)]
+    return sum(1 for i in inputs if a11y.is_labelled(soup, i)), len(inputs)
 
 
 def _alt_coverage(soup):

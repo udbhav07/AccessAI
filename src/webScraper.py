@@ -2,7 +2,7 @@ from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from . import nethttp
+from . import a11y, nethttp
 from .gemini import getAlt, getLabel
 from .webColorss import ChangeColor
 
@@ -156,12 +156,18 @@ class Scraper:
 
         An input that already has a label costs two calls (suitability check,
         then generation), so parallelising matters more here than for images.
+
+        Inputs with no id are handled too, via `aria-label` -- they used to be
+        skipped outright while still counting against coverage, which on a
+        real form is most of them.
         """
         targets = []
         for inp in self.soup.find_all('input'):
-            if not inp.get('id'):   # <label for> needs an id to point at
+            strategy = a11y.labelling_strategy(self.soup, inp)
+            if strategy is None:
                 continue
-            targets.append((inp, self.soup.find('label', attrs={'for': inp['id']})))
+            existing = a11y.explicit_label(self.soup, inp) if strategy == 'for' else None
+            targets.append((inp, existing, strategy))
 
         if not targets:
             return []
@@ -170,11 +176,20 @@ class Scraper:
             suggestions = list(pool.map(lambda t: getLabel(t[0], t[1]), targets))
 
         issues = []
-        for (inp, label), gemLabel in zip(targets, suggestions):
+        for (inp, label, strategy), gemLabel in zip(targets, suggestions):
             if gemLabel == 'y':     # existing label already fits, or the call failed
                 continue
 
-            if label is None:       # `not label` is falsy for an EMPTY <label></label>
+            if strategy == 'aria':
+                # An attribute, not a node: nothing moves, so this needs none
+                # of the layout exemptions an inserted <label> does.
+                inp['aria-label'] = gemLabel
+                issues.append({
+                    "type": "label", "source": "aria-label",
+                    "target": inp.get('name') or inp.get('placeholder') or 'input',
+                    "old": None, "new": gemLabel, "ids": [inp.get(ID_ATTR)],
+                })
+            elif label is None:     # `not label` is falsy for an EMPTY <label></label>
                 label = self.soup.new_tag('label')
                 label['for'] = inp['id']
                 label.string = gemLabel
