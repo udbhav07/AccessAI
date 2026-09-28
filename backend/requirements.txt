@@ -1,0 +1,19 @@
+# Direct dependencies. Install from requirements.lock; after editing this file, refresh it with:
+#   uv pip compile requirements.txt --universal --python-version 3.12 -o requirements.lock
+# After installing: python -m playwright install chromium
+
+flask~=3.1
+flask-cors~=6.0
+requests~=2.32
+beautifulsoup4~=4.14
+Pillow~=11.3
+cssutils~=2.15
+python-dotenv~=1.2
+google-genai~=2.25
+
+# verification (accessai/core/verifier.py)
+playwright~=1.62
+numpy~=2.3
+
+# No Windows build of gunicorn; use `python wsgi.py` locally.
+gunicorn~=23.0; sys_platform != "win32"

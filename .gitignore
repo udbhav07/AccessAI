@@ -1,33 +1,31 @@
-# --- Secrets: never commit -------------------------------------------------
-# The Gemini key is read from googleapikey.env at import time. Keep every
-# .env out of the repo; commit a .env.example with blank values instead.
+# Secrets
 *.env
-!*.env.example
-googleapikey.env
+.env.*
+!.env.example
 *.key
 *.pem
 secrets.json
 credentials.json
 
-# --- Virtual environments --------------------------------------------------
+# Virtual environments
 .venv/
 venv/
 env/
 ENV/
 
-# --- Python bytecode -------------------------------------------------------
-# NOTE: .pyc files already committed stay tracked until `git rm -r --cached`.
-# They embed string literals from the source, so a key that was once
-# hardcoded survives in the compiled file even after the source is cleaned.
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 
-# --- Runtime output --------------------------------------------------------
-# Verifier run store: holds full copies of scraped third-party pages.
+# Verifier run store
 runs/
 
-# --- Tooling / test artifacts ----------------------------------------------
+# Frontend
+node_modules/
+frontend/dist/
+
+# Tooling / test output
 .pytest_cache/
 .coverage
 htmlcov/
@@ -35,11 +33,11 @@ htmlcov/
 build/
 dist/
 
-# --- Editor / OS -----------------------------------------------------------
+# Editor / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 desktop.ini
-
+scripts
 docs/internal
