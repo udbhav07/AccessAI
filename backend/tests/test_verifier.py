@@ -306,6 +306,21 @@ def test_coverage_improves_on_the_demo_fixture(demo_scrape):
     summary = named(report, "Coverage").summary
     assert "alt 2/4 -> 4/4" in summary
     assert "labels 2/4 -> 4/4" in summary
+    assert not named(report, "Coverage").partial, "everything is covered"
+
+
+def test_coverage_that_holds_but_is_unfinished_is_partial():
+    page = BeautifulSoup('<img src="a.png"><input id="q">', "html.parser")
+    coverage = verifier.check_coverage(page, page)
+    assert coverage.passed and coverage.partial
+    assert verifier.Report([coverage]).as_dict()["checks"][0]["partial"] is True
+
+
+def test_coverage_that_fell_is_failed_not_partial():
+    before = BeautifulSoup('<img src="a.png" alt="A cat">', "html.parser")
+    after = BeautifulSoup('<img src="a.png">', "html.parser")
+    coverage = verifier.check_coverage(before, after)
+    assert not coverage.passed and not coverage.partial
 
 
 def test_the_demo_page_has_nothing_left_below_threshold(demo_scrape):

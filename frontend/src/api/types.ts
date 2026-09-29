@@ -25,6 +25,8 @@ export type CheckTier = 'blocking' | 'objective' | 'advisory'
 export interface Check {
   name: string
   passed: boolean
+  /** Passed, but not everything is fixed yet. Missing in reports saved before it existed. */
+  partial?: boolean
   summary: string
   details: string[]
   tier: CheckTier

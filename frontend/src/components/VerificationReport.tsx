@@ -1,6 +1,6 @@
 // The verification verdict, and each check with its tier, summary and details.
 
-import type { Report, Verdict } from '../api/types'
+import type { Check, Report, Verdict } from '../api/types'
 
 const VERDICTS: Record<Verdict, { badge: string; meaning: string }> = {
   PASS: { badge: 'bg-success', meaning: 'Everything held.' },
@@ -8,6 +8,22 @@ const VERDICTS: Record<Verdict, { badge: string; meaning: string }> = {
   INCOMPLETE: { badge: 'bg-warning text-dark', meaning: 'A fix did not land, or contrast regressed. Safe, but unfinished.' },
   BROKEN: { badge: 'bg-danger', meaning: 'The page itself changed. Do not ship this remediation.' },
   ERROR: { badge: 'bg-danger', meaning: 'The page could not be rendered for comparison.' },
+}
+
+const MARKS = {
+  passed: { symbol: '✓', label: 'Passed', className: 'text-success' },
+  partial: { symbol: '−', label: 'Partly done', className: 'check-partial' },
+  failed: { symbol: '✗', label: 'Failed', className: 'text-danger' },
+}
+
+function CheckMark({ check }: { check: Check }) {
+  const mark = !check.passed ? MARKS.failed : check.partial ? MARKS.partial : MARKS.passed
+  return (
+    <span className={mark.className}>
+      <span aria-hidden="true">{mark.symbol}</span>
+      <span className="visually-hidden">{mark.label}</span>
+    </span>
+  )
 }
 
 export function VerificationReport({ report }: { report: Report }) {
@@ -24,10 +40,7 @@ export function VerificationReport({ report }: { report: Report }) {
       <ul className="list-unstyled font-monospace checks">
         {report.checks.map((check) => (
           <li key={check.name} className="mb-1">
-            <span className={check.passed ? 'text-success' : 'text-danger'}>
-              <span aria-hidden="true">{check.passed ? '✓' : '✗'}</span>
-              <span className="visually-hidden">{check.passed ? 'Passed' : 'Failed'}</span>
-            </span>{' '}
+            <CheckMark check={check} />{' '}
             <strong className="check-name">{check.name}</strong>{' '}
             <span className="badge text-bg-light border fw-normal me-1">{check.tier}</span>
             {check.summary}

@@ -20,6 +20,13 @@ describe('VerificationReport', () => {
     expect(screen.getByText('Failed')).toBeInTheDocument()
   })
 
+  it('marks a check that passed but left work unfinished', () => {
+    const coverage = { name: 'Coverage', passed: true, partial: true, summary: 'labels 2/4 -> 2/4', details: [], tier: 'objective' as const }
+    render(<VerificationReport report={{ ...report, checks: [coverage] }} />)
+    expect(screen.getByText('Partly done')).toBeInTheDocument()
+    expect(screen.queryByText('Passed')).not.toBeInTheDocument()
+  })
+
   it('lists the elements a check flagged', () => {
     render(<VerificationReport report={report} />)
     expect(screen.getByText('1 element(s)')).toBeInTheDocument()

@@ -27,6 +27,8 @@ class CheckResult:
     tier: str = "blocking"        # blocking | objective | advisory
     # Ids this check failed on (not warnings); the pixel check skips them.
     element_ids: set = field(default_factory=set)
+    # Passed, but the job isn't finished (e.g. some images still have no alt text).
+    partial: bool = False
 
 
 @dataclass
@@ -50,7 +52,7 @@ class Report:
         if self.error:
             return f"{head}\n{self.error}"
         body = "\n".join(
-            f"{'PASS' if c.passed else 'FAIL'}  {c.name:<12} {c.summary}"
+            f"{('PART' if c.partial else 'PASS') if c.passed else 'FAIL'}  {c.name:<12} {c.summary}"
             for c in self.checks
         )
         return f"{head}\n\n{body}"
@@ -60,8 +62,8 @@ class Report:
             "verdict": self.verdict,
             "error": self.error,
             "checks": [
-                {"name": c.name, "passed": c.passed, "summary": c.summary,
-                 "details": c.details, "tier": c.tier}
+                {"name": c.name, "passed": c.passed, "partial": c.partial,
+                 "summary": c.summary, "details": c.details, "tier": c.tier}
                 for c in self.checks
             ],
         }
@@ -207,7 +209,10 @@ def check_coverage(soup_before, soup_after):
 
     summary = (f"alt {alt_b}/{alt_total} -> {alt_a}/{alt_total_a},  "
                f"labels {lbl_b}/{lbl_total} -> {lbl_a}/{lbl_total_a}")
-    return CheckResult("Coverage", not details, summary, details, "objective")
+    passed = not details
+    unfinished = alt_a < alt_total_a or lbl_a < lbl_total_a
+    return CheckResult("Coverage", passed, summary, details, "objective",
+                       partial=passed and unfinished)
 
 
 def check_contrast_goal(snap_before, snap_after, modified_ids=()):

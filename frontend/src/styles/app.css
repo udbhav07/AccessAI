@@ -66,6 +66,19 @@
   min-width: 7.5rem;
 }
 
+.checks .check-partial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+  border-radius: 50%;
+  background: var(--bs-danger);
+  color: #fff;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .preview {
   border: 2px solid var(--bs-emphasis-color);
   border-radius: 10px;
